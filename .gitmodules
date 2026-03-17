@@ -1,0 +1,3 @@
+[submodule "deps/LAGraph"]
+	path = deps/LAGraph
+	url = https://github.com/SparseLinearAlgebra/LAGraph.git
