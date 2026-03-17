@@ -4,20 +4,27 @@
 //!
 //! ```no_run
 //! use pathrex::graph::{Graph, InMemory, GraphDecomposition};
-//! use pathrex::formats::Csv;
+//! use pathrex::formats::{Csv, NTriples};
 //! use std::fs::File;
 //!
 //! // Build from CSV in one line
 //! let g = Graph::<InMemory>::try_from(
 //!     Csv::from_reader(File::open("edges.csv").unwrap()).unwrap()
 //! ).unwrap();
+//!
+//! // Build from N-Triples in one line
+//! let g2 = Graph::<InMemory>::try_from(
+//!     NTriples::new(File::open("data.nt").unwrap())
+//! ).unwrap();
 //! ```
 
 pub mod csv;
 pub mod mm;
+pub mod nt;
 
 pub use csv::Csv;
 pub use mm::MatrixMarket;
+pub use nt::NTriples;
 
 use thiserror::Error;
 
@@ -49,4 +56,13 @@ pub enum FormatError {
         line: usize,
         reason: String,
     },
+
+    /// An error produced by the N-Triples parser.
+    #[error("N-Triples parse error: {0}")]
+    NTriples(String),
+
+    /// An RDF literal appeared as a subject or object where a node IRI or
+    /// blank node was expected.
+    #[error("RDF literal cannot be used as a graph node (triple skipped)")]
+    LiteralAsNode,
 }
