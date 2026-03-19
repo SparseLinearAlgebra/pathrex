@@ -5,7 +5,7 @@ use std::io::Read;
 use csv::StringRecord;
 
 use crate::formats::FormatError;
-use crate::graph::{Edge};
+use crate::graph::Edge;
 
 #[derive(Debug, Clone)]
 pub enum ColumnSpec {
@@ -130,7 +130,11 @@ impl<R: Read> Iterator for Csv<R> {
             let source = Self::get_field(&record, self.source_idx)?;
             let target = Self::get_field(&record, self.target_idx)?;
             let label = Self::get_field(&record, self.label_idx)?;
-            Ok(Edge { source, target, label })
+            Ok(Edge {
+                source,
+                target,
+                label,
+            })
         })())
     }
 }

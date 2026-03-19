@@ -1,14 +1,14 @@
-use std::{collections::HashMap, io::Read};
 use std::sync::Arc;
+use std::{collections::HashMap, io::Read};
 
 use crate::formats::Csv;
-use crate::{graph::GraphSource, lagraph_sys::{
-    GrB_BOOL, GrB_Index, GrB_Info, GrB_LOR, GrB_Matrix, GrB_Matrix_build_BOOL, GrB_Matrix_free, GrB_Matrix_new, LAGraph_Graph, LAGraph_Kind, LAGraph_New
-}};
+use crate::{
+    graph::GraphSource,
+    lagraph_sys::{GrB_Index, GrB_Matrix, GrB_Matrix_free, LAGraph_Kind},
+};
 
 use super::{
-    Backend, Edge, GraphBuilder, GraphDecomposition, GraphError, LagraphGraph,
-    ensure_grb_init, grb_ok,
+    Backend, Edge, GraphBuilder, GraphDecomposition, GraphError, LagraphGraph, ensure_grb_init,
 };
 
 /// Marker type for the in-memory GraphBLAS-backed backend.
@@ -31,6 +31,7 @@ impl Backend for InMemory {
 }
 
 /// Accumulates edges in RAM and compiles them into an [`InMemoryGraph`].
+#[derive(Default)]
 pub struct InMemoryBuilder {
     node_to_id: HashMap<String, u64>,
     id_to_node: Vec<String>,
@@ -68,7 +69,7 @@ impl InMemoryBuilder {
         Ok(())
     }
 
-    pub fn with_stream<I, E>(&mut self, stream: I) -> Result<(), GraphError>
+    pub fn with_stream<I, E>(mut self, stream: I) -> Result<Self, GraphError>
     where
         I: IntoIterator<Item = Result<Edge, E>>,
         GraphError: From<E>,
@@ -76,7 +77,7 @@ impl InMemoryBuilder {
         for item in stream {
             self.push_edge(item?)?;
         }
-        Ok(())
+        Ok(self)
     }
 
     /// Accept a pre-built [`GrB_Matrix`] for `label`, wrapping it in an
@@ -87,31 +88,18 @@ impl InMemoryBuilder {
         mut matrix: GrB_Matrix,
     ) -> Result<(), GraphError> {
         ensure_grb_init()?;
-        let lg: LagraphGraph = unsafe {
-            let mut g: LAGraph_Graph = std::ptr::null_mut();
-            let mut msg = [0i8; 256];
-            let info = LAGraph_New(
-                &mut g,
-                &mut matrix,
-                LAGraph_Kind::LAGraph_ADJACENCY_DIRECTED,
-                msg.as_mut_ptr(),
-            );
-            if info != GrB_Info::GrB_SUCCESS as i32 {
-                if !matrix.is_null() {
-                    GrB_Matrix_free(&mut matrix);
+        let lg: LagraphGraph =
+            match LagraphGraph::new(matrix, LAGraph_Kind::LAGraph_ADJACENCY_DIRECTED) {
+                Ok(g) => g,
+                Err(e) => {
+                    if !matrix.is_null() {
+                        unsafe { GrB_Matrix_free(&mut matrix) };
+                    }
+                    return Err(e);
                 }
-                return Err(GraphError::GraphBlas(info));
-            }
-            LagraphGraph { inner: g }
-        };
+            };
         self.prebuilt.insert(label.into(), lg);
         Ok(())
-    }
-}
-
-impl Default for InMemoryBuilder {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -135,40 +123,14 @@ impl GraphBuilder for InMemoryBuilder {
             let rows: Vec<GrB_Index> = pairs.iter().map(|(r, _)| *r).collect();
             let cols: Vec<GrB_Index> = pairs.iter().map(|(_, c)| *c).collect();
             let vals: Vec<bool> = vec![true; pairs.len()];
-            let nvals = pairs.len() as GrB_Index;
 
-            let grb_matrix: GrB_Matrix = unsafe {
-                let mut m: GrB_Matrix = std::ptr::null_mut();
-                grb_ok(GrB_Matrix_new(&mut m, GrB_BOOL, n, n) as i32)?;
-                grb_ok(GrB_Matrix_build_BOOL(
-                    m,
-                    rows.as_ptr(),
-                    cols.as_ptr(),
-                    vals.as_ptr(),
-                    nvals,
-                    GrB_LOR,
-                ) as i32)?;
-                m
-            };
-
-            let lg: LagraphGraph = unsafe {
-                let mut g: LAGraph_Graph = std::ptr::null_mut();
-                let mut a = grb_matrix;
-                let mut msg = [0i8; 256];
-                let info = LAGraph_New(
-                    &mut g,
-                    &mut a,
-                    LAGraph_Kind::LAGraph_ADJACENCY_DIRECTED,
-                    msg.as_mut_ptr(),
-                );
-                if info != GrB_Info::GrB_SUCCESS as i32 {
-                    if !a.is_null() {
-                        GrB_Matrix_free(&mut a);
-                    }
-                    return Err(GraphError::GraphBlas(info));
-                }
-                LagraphGraph { inner: g }
-            };
+            let lg = LagraphGraph::from_coo(
+                &rows,
+                &cols,
+                &vals,
+                n,
+                LAGraph_Kind::LAGraph_ADJACENCY_DIRECTED,
+            )?;
 
             graphs.insert(label.clone(), Arc::new(lg));
         }
@@ -218,7 +180,10 @@ impl GraphDecomposition for InMemoryGraph {
 }
 
 impl<R: Read> GraphSource<InMemoryBuilder> for Csv<R> {
-    fn apply_to(self, mut builder: InMemoryBuilder) -> Result<InMemoryBuilder, crate::graph::GraphError> {
+    fn apply_to(
+        self,
+        mut builder: InMemoryBuilder,
+    ) -> Result<InMemoryBuilder, crate::graph::GraphError> {
         for item in self {
             builder.push_edge(item?)?;
         }
@@ -279,7 +244,9 @@ mod tests {
 
     #[test]
     fn test_empty_builder_produces_empty_graph() {
-        let graph = InMemoryBuilder::new().build().expect("build should succeed");
+        let graph = InMemoryBuilder::new()
+            .build()
+            .expect("build should succeed");
         assert_eq!(graph.num_nodes(), 0);
         assert!(matches!(
             graph.get_graph("anything"),
