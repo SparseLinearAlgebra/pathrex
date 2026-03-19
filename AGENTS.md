@@ -29,7 +29,8 @@ pathrex/
 │   └── formats/
 │       ├── mod.rs              # FormatError enum, re-exports
 │       ├── csv.rs              # Csv<R> — CSV → Edge iterator (CsvConfig, ColumnSpec)
-│       └── mm.rs               # MatrixMarket directory loader (vertices.txt, edges.txt, *.txt)
+│       ├── mm.rs               # MatrixMarket directory loader (vertices.txt, edges.txt, *.txt)
+│       └── nt.rs               # NTriples<R> — N-Triples → Edge iterator (LabelExtraction)
 ├── tests/
 │   ├── inmemory_tests.rs       # Integration tests for InMemoryBuilder / InMemoryGraph
 │   └── mm_tests.rs             # Integration tests for MatrixMarket format
@@ -121,7 +122,7 @@ regenerates it with `--features regenerate-bindings`. **Do not hand-edit this fi
 
 ### Edge
 
-[`Edge`](src/graph/mod.rs:154) is the universal currency between format parsers and graph
+[`Edge`](src/graph/mod.rs:158) is the universal currency between format parsers and graph
 builders: `{ source: String, target: String, label: String }`.
 
 ### GraphSource trait
@@ -132,8 +133,9 @@ feed itself into a specific [`GraphBuilder`]:
 - [`apply_to(self, builder: B) -> Result<B, B::Error>`](src/graph/mod.rs:165) — consumes the
   source and returns the populated builder.
 
-[`Csv<R>`](src/formats/csv.rs:52) implements `GraphSource<InMemoryBuilder>` directly, so it
-can be passed to [`GraphBuilder::load`].
+[`Csv<R>`](src/formats/csv.rs), [`MatrixMarket`](src/formats/mm.rs), and [`NTriples<R>`](src/formats/nt.rs)
+implement `GraphSource<InMemoryBuilder>` (see [`src/graph/inmemory.rs`](src/graph/inmemory.rs)), so they
+can be passed to [`GraphBuilder::load`] and [`Graph::try_from`].
 
 ### GraphBuilder trait
 
@@ -196,12 +198,13 @@ which is used by the MatrixMarket loader.
 
 ### Format parsers
 
-Two built-in parsers are available:
+Three built-in parsers are available, each yielding
+`Iterator<Item = Result<Edge, FormatError>>` and pluggable into
+`GraphBuilder::load()` via `GraphSource<InMemoryBuilder>` (see [`src/graph/inmemory.rs`](src/graph/inmemory.rs)).
 
-#### CSV format
+#### `Csv<R>`
 
-[`Csv<R>`](src/formats/csv.rs:52) yields `Iterator<Item = Result<Edge, FormatError>>` and is
-directly pluggable into `GraphBuilder::load()` via its `GraphSource<InMemoryBuilder>` impl.
+[`Csv<R>`](src/formats/csv.rs) parses delimiter-separated edge files.
 
 Configuration is via [`CsvConfig`](src/formats/csv.rs:17):
 
@@ -237,7 +240,7 @@ Helper functions:
 
 - [`load_mm_file(path)`](src/formats/mm.rs:39) — reads a single MatrixMarket file into a
   `GrB_Matrix`.
-- [`parse_index_map(path)`](src/formats/mm.rs) — parses `<name> <index>` lines; indices must be **>= 1** and **unique** within the file.
+- [`parse_index_map(path)`](src/formats/mm.rs:81) — parses `<name> <index>` lines; indices must be **>= 1** and **unique** within the file.
 
 `MatrixMarket` implements `GraphSource<InMemoryBuilder>` in [`src/graph/inmemory.rs`](src/graph/inmemory.rs) (see the `impl` at line 215): `vertices.txt` maps are converted from 1-based file indices to 0-based matrix ids before [`set_node_map`](src/graph/inmemory.rs:67); `edges.txt` indices are unchanged for `n.txt` lookup.
 
@@ -273,6 +276,27 @@ and the parsed query contains full IRIs sharing a common prefix.
 
 The module handles spargebra's desugaring of sequence paths (`?x <a>/<b>/<c> ?y`)
 from a chain of BGP triples back into a single path expression.
+
+#### `NTriples<R>`
+
+[`NTriples<R>`](src/formats/nt.rs:64) parses [W3C N-Triples](https://www.w3.org/TR/n-triples/)
+RDF files using `oxttl` and `oxrdf`. Each triple `(subject, predicate, object)` becomes an
+[`Edge`](src/graph/mod.rs:158) where:
+
+- `source` — subject IRI or blank-node ID (`_:label`).
+- `target` — object IRI or blank-node ID; triples whose object is an RDF
+  literal yield `Err(FormatError::LiteralAsNode)` (callers may filter these out).
+- `label` — predicate IRI, transformed by [`LabelExtraction`](src/formats/nt.rs:38):
+
+| Variant | Behaviour |
+|---|---|
+| `LocalName` (default) | Fragment (`#name`) or last path segment of the predicate IRI |
+| `FullIri` | Full predicate IRI string |
+
+Constructors:
+
+- [`NTriples::new(reader)`](src/formats/nt.rs:70) — uses `LabelExtraction::LocalName`.
+- [`NTriples::with_label_extraction(reader, strategy)`](src/formats/nt.rs:74) — explicit strategy.
 
 ### FFI layer
 
@@ -331,7 +355,7 @@ Tests in `src/graph/mod.rs` use `CountingBuilder` / `CountOutput` / `VecSource` 
 [`src/utils.rs`](src/utils.rs) — these do **not** call into GraphBLAS and run without
 native libraries.
 
-Tests in `src/formats/csv.rs` are pure Rust and need no native dependencies.
+Tests in `src/formats/csv.rs` and `src/formats/nt.rs` are pure Rust and need no native dependencies.
 
 Tests in `src/sparql/mod.rs` are pure Rust and need no native dependencies.
 
