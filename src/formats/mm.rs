@@ -31,7 +31,7 @@ use std::os::fd::IntoRawFd;
 use std::path::{Path, PathBuf};
 
 use crate::formats::FormatError;
-use crate::graph::{ensure_grb_init, GraphError};
+use crate::graph::{GraphError, ensure_grb_init};
 use crate::la_ok;
 use crate::lagraph_sys::{FILE, GrB_Matrix, LAGraph_MMRead};
 
@@ -40,10 +40,13 @@ pub fn load_mm_file(path: impl AsRef<Path>) -> Result<GrB_Matrix, FormatError> {
     let path = path.as_ref();
 
     ensure_grb_init().map_err(|e| match e {
-        GraphError::LAGraph(info, msg) => FormatError::MatrixMarket { code: info, message: msg },
+        GraphError::LAGraph(info, msg) => FormatError::MatrixMarket {
+            code: info,
+            message: msg,
+        },
         _ => FormatError::MatrixMarket {
             code: crate::lagraph_sys::GrB_Info::GrB_PANIC,
-            message: "Failed to initialize GraphBLAS".to_string()
+            message: "Failed to initialize GraphBLAS".to_string(),
         },
     })?;
 
@@ -62,10 +65,12 @@ pub fn load_mm_file(path: impl AsRef<Path>) -> Result<GrB_Matrix, FormatError> {
     let err = la_ok!(LAGraph_MMRead(&mut matrix, f as *mut FILE));
     unsafe { libc::fclose(f) };
 
-
     match err {
         Ok(_) => Ok(matrix),
-        Err(GraphError::LAGraph(info, msg)) => Err(FormatError::MatrixMarket { code: info, message: msg }),
+        Err(GraphError::LAGraph(info, msg)) => Err(FormatError::MatrixMarket {
+            code: info,
+            message: msg,
+        }),
         _ => unreachable!("should be either mm read error or ok"),
     }
 }
