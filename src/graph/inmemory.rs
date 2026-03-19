@@ -214,7 +214,12 @@ impl<R: Read> GraphSource<InMemoryBuilder> for Csv<R> {
 
 impl GraphSource<InMemoryBuilder> for MatrixMarket {
     fn apply_to(self, mut builder: InMemoryBuilder) -> Result<InMemoryBuilder, GraphError> {
-        let (vert_by_idx, vert_by_name) = parse_index_map(&self.dir.join("vertices.txt"))?;
+        let vertices_path = self.dir.join("vertices.txt");
+        let (vert_by_idx, vert_by_name) = parse_index_map(&vertices_path)?;
+        let vert_by_idx  =
+            vert_by_idx.into_iter().map(|(i, n)| (i - 1, n)).collect();
+        let vert_by_name =
+            vert_by_name.into_iter().map(|(n, i)| (n, i - 1)).collect();
 
         let (edge_by_idx, _) = parse_index_map(&self.dir.join("edges.txt"))?;
 
@@ -222,10 +227,8 @@ impl GraphSource<InMemoryBuilder> for MatrixMarket {
 
         for (idx, label) in edge_by_idx {
             let path = self.mm_path(idx);
-            if path.exists() {
-                let matrix = load_mm_file(&path)?;
-                builder.push_grb_matrix(label, matrix)?;
-            }
+            let matrix = load_mm_file(&path)?;
+            builder.push_grb_matrix(label, matrix)?;
         }
 
         Ok(builder)

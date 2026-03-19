@@ -75,7 +75,9 @@ pub fn load_mm_file(path: impl AsRef<Path>) -> Result<GrB_Matrix, FormatError> {
     }
 }
 
-/// Parse a `<name> <1-based-index>` mapping file.
+/// Parse a `<name> <index>` mapping file.
+///
+/// Throws error on non-positive or duplicate indicies
 pub(crate) fn parse_index_map(
     path: &Path,
 ) -> Result<(HashMap<usize, String>, HashMap<String, usize>), FormatError> {
@@ -109,11 +111,28 @@ pub(crate) fn parse_index_map(
             .map_err(|_| FormatError::InvalidFormat {
                 file: file_name.clone(),
                 line: line_no + 1,
-                reason: format!("index '{}' is not a valid positive integer", idx_str.trim()),
+                reason: format!(
+                    "index '{}' is not a valid positive integer",
+                    idx_str.trim()
+                ),
             })?;
 
+        if idx == 0 {
+            return Err(FormatError::InvalidFormat {
+                file: file_name.clone(),
+                line: line_no + 1,
+                reason: "index must be a positive integer (>= 1)".into(),
+            });
+        }
+
         let name = name.trim().to_owned();
-        by_idx.insert(idx, name.clone());
+        if by_idx.insert(idx, name.clone()).is_some() {
+            return Err(FormatError::InvalidFormat {
+                file: file_name.clone(),
+                line: line_no + 1,
+                reason: format!("duplicate index {idx}"),
+            });
+        }
         by_name.insert(name, idx);
     }
 
@@ -177,6 +196,22 @@ mod tests {
         assert_eq!(by_idx[&3], "<1940>");
         assert_eq!(by_name["<Article1>"], 1);
         assert_eq!(by_name["<Paul_Erdoes>"], 2);
+    }
+
+    #[test]
+    fn test_parse_index_map_rejects_zero_index() {
+        let tmp = TempDir::new().unwrap();
+        write_file(tmp.path(), "v.txt", "<a> 0\n");
+        let err = parse_index_map(&tmp.path().join("v.txt")).unwrap_err();
+        assert!(matches!(err, FormatError::InvalidFormat { .. }));
+    }
+
+    #[test]
+    fn test_parse_index_map_rejects_duplicate_index() {
+        let tmp = TempDir::new().unwrap();
+        write_file(tmp.path(), "v.txt", "<a> 1\n<b> 1\n");
+        let err = parse_index_map(&tmp.path().join("v.txt")).unwrap_err();
+        assert!(matches!(err, FormatError::InvalidFormat { .. }));
     }
 
     #[test]

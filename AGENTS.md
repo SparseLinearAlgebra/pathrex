@@ -26,9 +26,11 @@ pathrex/
 │   │   └── inmemory.rs         # InMemory marker, InMemoryBuilder, InMemoryGraph
 │   └── formats/
 │       ├── mod.rs              # FormatError enum, re-exports
-│       └── csv.rs              # Csv<R> — CSV → Edge iterator (CsvConfig, ColumnSpec)
+│       ├── csv.rs              # Csv<R> — CSV → Edge iterator (CsvConfig, ColumnSpec)
+│       └── mm.rs               # MatrixMarket directory loader (vertices.txt, edges.txt, *.txt)
 ├── tests/
-│   └── inmemory_tests.rs       # Integration tests for InMemoryBuilder / InMemoryGraph
+│   ├── inmemory_tests.rs       # Integration tests for InMemoryBuilder / InMemoryGraph
+│   └── mm_tests.rs             # Integration tests for MatrixMarket format
 ├── deps/
 │   └── LAGraph/                # Git submodule (SparseLinearAlgebra/LAGraph)
 └── .github/workflows/ci.yml   # CI: build GraphBLAS + LAGraph, cargo build & test
@@ -178,18 +180,26 @@ pub trait Backend {
 ### InMemoryBuilder / InMemoryGraph
 
 [`InMemoryBuilder`](src/graph/inmemory.rs:35) is the primary `GraphBuilder` implementation.
-It collects edges in RAM, then [`build()`](src/graph/inmemory.rs:110) calls
+It collects edges in RAM, then [`build()`](src/graph/inmemory.rs:131) calls
 GraphBLAS to create one `GrB_Matrix` per label via COO format, wraps each in an
-`LAGraph_Graph`, and returns an [`InMemoryGraph`](src/graph/inmemory.rs:153).
+`LAGraph_Graph`, and returns an [`InMemoryGraph`](src/graph/inmemory.rs:173).
 
 Multiple CSV sources can be chained with repeated `.load()` calls; all edges are merged
 into a single graph.
 
+**Node ID representation:** Internally, `InMemoryBuilder` uses `HashMap<usize, String>` for
+`id_to_node` (changed from `Vec<String>` to support sparse/pre-assigned IDs from MatrixMarket).
+The [`set_node_map()`](src/graph/inmemory.rs:67) method allows bulk-installing a node mapping,
+which is used by the MatrixMarket loader.
+
 ### Format parsers
 
-[`Csv<R>`](src/formats/csv.rs:52) is the only built-in parser. It yields
-`Iterator<Item = Result<Edge, FormatError>>` and is directly pluggable into
-`GraphBuilder::load()` via its `GraphSource<InMemoryBuilder>` impl.
+Two built-in parsers are available:
+
+#### CSV format
+
+[`Csv<R>`](src/formats/csv.rs:52) yields `Iterator<Item = Result<Edge, FormatError>>` and is
+directly pluggable into `GraphBuilder::load()` via its `GraphSource<InMemoryBuilder>` impl.
 
 Configuration is via [`CsvConfig`](src/formats/csv.rs:17):
 
@@ -203,6 +213,26 @@ Configuration is via [`CsvConfig`](src/formats/csv.rs:17):
 
 [`ColumnSpec`](src/formats/csv.rs:11) is either `Index(usize)` or `Name(String)`.
 Name-based lookup requires `has_header: true`.
+
+#### MatrixMarket directory format
+
+[`MatrixMarket`](src/formats/mm.rs:160) loads an edge-labeled graph from a directory with:
+
+- `vertices.txt` — one line per node: `<node_name> <1-based-index>` on disk; [`get_node_id`](src/graph/mod.rs:199) returns the matching **0-based** matrix index
+- `edges.txt` — one line per label: `<label_name> <1-based-index>` (selects `n.txt`)
+- `<n>.txt` — MatrixMarket adjacency matrix for label with index `n`
+
+The loader uses [`LAGraph_MMRead`](src/lagraph_sys.rs) to parse each `.txt` file into a
+`GrB_Matrix`, then wraps it in an `LAGraph_Graph`. Vertex indices from `vertices.txt` are
+converted to 0-based and installed via [`InMemoryBuilder::set_node_map()`](src/graph/inmemory.rs:67).
+
+Helper functions:
+
+- [`load_mm_file(path)`](src/formats/mm.rs:64) — reads a single MatrixMarket file into a
+  `GrB_Matrix`.
+- [`parse_index_map(path)`](src/formats/mm.rs) — parses `<name> <index>` lines; indices must be **>= 1** and **unique** within the file.
+
+`MatrixMarket` implements `GraphSource<InMemoryBuilder>` in [`src/graph/inmemory.rs`](src/graph/inmemory.rs): `vertices.txt` maps are converted from 1-based file indices to 0-based matrix ids before [`set_node_map`](src/graph/inmemory.rs:67); `edges.txt` indices are unchanged for `n.txt` lookup.
 
 ### FFI layer
 

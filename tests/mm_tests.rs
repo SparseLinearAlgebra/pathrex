@@ -26,10 +26,10 @@ fn test_mm_graph_node_mapping() {
     let graph = &INMEMORY_GRAPH;
 
     let test_nodes = vec![
-        ("<Article1>", 1),
-        ("<1940>", 2),
-        ("<Adamanta_Schlitt>", 3),
-        ("<Paul_Erdoes>", 4),
+        ("<Article1>", 0),
+        ("<1940>", 1),
+        ("<Adamanta_Schlitt>", 2),
+        ("<Paul_Erdoes>", 3),
     ];
 
     for (name, expected_id) in test_nodes {
@@ -39,7 +39,7 @@ fn test_mm_graph_node_mapping() {
         let retrieved_name = graph
             .get_node_name(id)
             .expect("ID should map back to a name");
-        assert_eq!(retrieved_name, name,);
+        assert_eq!(retrieved_name, name);
     }
 }
 
@@ -61,7 +61,7 @@ fn test_mm_graph_edge_labels() {
 
     for label in expected_labels {
         let result = graph.get_graph(label);
-        assert!(result.is_ok(),);
+        assert!(result.is_ok());
     }
 }
 
@@ -77,9 +77,9 @@ fn test_mm_graph_nonexistent_label() {
 fn test_mm_graph_nonexistent_node() {
     let graph = &INMEMORY_GRAPH;
 
-    assert!(graph.get_node_id("<NonexistentNode>").is_none(),);
+    assert!(graph.get_node_id("<NonexistentNode>").is_none());
 
-    assert!(graph.get_node_name(999999).is_none(),);
+    assert!(graph.get_node_name(999999).is_none());
 }
 
 #[test]
@@ -179,16 +179,13 @@ fn test_mm_graph_handles_large_indices() {
     let mm = MatrixMarket::from_dir("tests/testdata/mm_graph");
     let graph = Graph::<InMemory>::try_from(mm).expect("Failed to load graph");
 
-    // Test that we can handle nodes with large indices
-    // The last node in vertices.txt should be around index 24225
     let num_nodes = graph.num_nodes();
 
-    // Try to get a node name for a valid high index
-    let high_index = num_nodes;
+    let high_index = num_nodes - 1;
     let name = graph.get_node_name(high_index);
     assert!(
         name.is_some(),
-        "Should be able to retrieve node at index {}",
+        "Should be able to retrieve node at last matrix index {}",
         high_index
     );
 }
