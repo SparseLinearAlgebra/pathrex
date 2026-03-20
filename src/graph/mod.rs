@@ -141,6 +141,35 @@ impl GraphblasVector {
         grb_ok!(GrB_Vector_new(&mut v, GrB_BOOL, n))?;
         Ok(Self { inner: v })
     }
+
+    /// Returns the number of stored values in this vector.
+    pub fn nvals(&self) -> Result<GrB_Index, GraphError> {
+        let mut nvals: GrB_Index = 0;
+        grb_ok!(GrB_Vector_nvals(&mut nvals, self.inner))?;
+        Ok(nvals)
+    }
+
+    /// Extracts all stored indices from boolean vector.
+    pub fn indices(&self) -> Result<Vec<GrB_Index>, GraphError> {
+        let nvals = self.nvals()?;
+        if nvals == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut indices = vec![0u64; nvals as usize];
+        let mut values = vec![false; nvals as usize];
+        let mut actual_nvals = nvals;
+
+        grb_ok!(GrB_Vector_extractTuples_BOOL(
+            indices.as_mut_ptr(),
+            values.as_mut_ptr(),
+            &mut actual_nvals,
+            self.inner,
+        ))?;
+
+        indices.truncate(actual_nvals as usize);
+        Ok(indices)
+    }
 }
 
 impl Drop for GraphblasVector {

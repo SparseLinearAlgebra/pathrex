@@ -156,9 +156,6 @@ unsafe extern "C" {
     ) -> GrB_Info;
 }
 unsafe extern "C" {
-    pub fn GrB_Matrix_dup(C: *mut GrB_Matrix, A: GrB_Matrix) -> GrB_Info;
-}
-unsafe extern "C" {
     pub fn GrB_Matrix_nvals(nvals: *mut GrB_Index, A: GrB_Matrix) -> GrB_Info;
 }
 unsafe extern "C" {
@@ -269,6 +266,21 @@ unsafe extern "C" {
     pub fn LAGraph_MMRead(
         A: *mut GrB_Matrix,
         f: *mut FILE,
+        msg: *mut ::std::os::raw::c_char,
+    ) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn LAGraph_RegularPathQuery(
+        reachable: *mut GrB_Vector,
+        R: *mut LAGraph_Graph,
+        nl: usize,
+        QS: *const GrB_Index,
+        nqs: usize,
+        QF: *const GrB_Index,
+        nqf: usize,
+        G: *mut LAGraph_Graph,
+        S: *const GrB_Index,
+        ns: usize,
         msg: *mut ::std::os::raw::c_char,
     ) -> ::std::os::raw::c_int;
 }
