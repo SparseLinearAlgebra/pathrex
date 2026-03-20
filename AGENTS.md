@@ -14,7 +14,7 @@ pathrex/
 ├── Cargo.toml                  # Crate manifest (edition 2024)
 ├── build.rs                    # Links LAGraph + LAGraphX; optionally regenerates FFI bindings
 ├── src/
-│   ├── lib.rs                  # Public modules: formats, graph, sparql, lagraph_sys, utils
+│   ├── lib.rs                  # Modules: formats, graph, sparql, utils (pub(crate)), lagraph_sys
 │   ├── main.rs                 # Binary entry point (placeholder)
 │   ├── lagraph_sys.rs          # FFI module — includes generated bindings
 │   ├── lagraph_sys_generated.rs# Bindgen output (checked in, regenerated in CI)
@@ -121,15 +121,15 @@ regenerates it with `--features regenerate-bindings`. **Do not hand-edit this fi
 
 ### Edge
 
-[`Edge`](src/graph/mod.rs:154) is the universal currency between format parsers and graph
+[`Edge`](src/graph/mod.rs:158) is the universal currency between format parsers and graph
 builders: `{ source: String, target: String, label: String }`.
 
 ### GraphSource trait
 
-[`GraphSource<B>`](src/graph/mod.rs:164) is implemented by any data source that knows how to
+[`GraphSource<B>`](src/graph/mod.rs:168) is implemented by any data source that knows how to
 feed itself into a specific [`GraphBuilder`]:
 
-- [`apply_to(self, builder: B) -> Result<B, B::Error>`](src/graph/mod.rs:165) — consumes the
+- [`apply_to(self, builder: B) -> Result<B, B::Error>`](src/graph/mod.rs:169) — consumes the
   source and returns the populated builder.
 
 [`Csv<R>`](src/formats/csv.rs:52) implements `GraphSource<InMemoryBuilder>` directly, so it
@@ -137,24 +137,24 @@ can be passed to [`GraphBuilder::load`].
 
 ### GraphBuilder trait
 
-[`GraphBuilder`](src/graph/mod.rs:169) accumulates edges and produces a
-[`GraphDecomposition`](src/graph/mod.rs:188):
+[`GraphBuilder`](src/graph/mod.rs:173) accumulates edges and produces a
+[`GraphDecomposition`](src/graph/mod.rs:192):
 
-- [`load<S: GraphSource<Self>>(self, source: S)`](src/graph/mod.rs:179) — primary entry point;
+- [`load<S: GraphSource<Self>>(self, source: S)`](src/graph/mod.rs:183) — primary entry point;
   delegates to `GraphSource::apply_to`.
-- [`build(self)`](src/graph/mod.rs:184) — finalise into an immutable graph.
+- [`build(self)`](src/graph/mod.rs:188) — finalise into an immutable graph.
 
 `InMemoryBuilder` also exposes lower-level helpers outside the trait:
 
-- [`push_edge(&mut self, edge: Edge)`](src/graph/inmemory.rs:62) — ingest one edge.
-- [`with_stream<I, E>(self, stream: I)`](src/graph/inmemory.rs:72) — consume an
+- [`push_edge(&mut self, edge: Edge)`](src/graph/inmemory.rs:83) — ingest one edge.
+- [`with_stream<I, E>(self, stream: I)`](src/graph/inmemory.rs:93) — consume an
   `IntoIterator<Item = Result<Edge, E>>`.
-- [`push_grb_matrix(&mut self, label, matrix: GrB_Matrix)`](src/graph/inmemory.rs:85) — accept
+- [`push_grb_matrix(&mut self, label, matrix: GrB_Matrix)`](src/graph/inmemory.rs:106) — accept
   a pre-built `GrB_Matrix` for a label, wrapping it in an `LAGraph_Graph` immediately.
 
 ### Backend trait & Graph\<B\> handle
 
-[`Backend`](src/graph/mod.rs:217) associates a marker type with a concrete builder/graph pair:
+[`Backend`](src/graph/mod.rs:221) associates a marker type with a concrete builder/graph pair:
 
 ```rust
 pub trait Backend {
@@ -163,28 +163,28 @@ pub trait Backend {
 }
 ```
 
-[`Graph<B>`](src/graph/mod.rs:229) is a zero-sized handle parameterised by a `Backend`:
+[`Graph<B>`](src/graph/mod.rs:233) is a zero-sized handle parameterised by a `Backend`:
 
-- [`Graph::<InMemory>::builder()`](src/graph/mod.rs:234) — returns a fresh `InMemoryBuilder`.
-- [`Graph::<InMemory>::try_from(source)`](src/graph/mod.rs:238) — builds a graph from a single
+- [`Graph::<InMemory>::builder()`](src/graph/mod.rs:238) — returns a fresh `InMemoryBuilder`.
+- [`Graph::<InMemory>::try_from(source)`](src/graph/mod.rs:242) — builds a graph from a single
   source in one call.
 
-[`InMemory`](src/graph/inmemory.rs:26) is the concrete backend marker type.
+[`InMemory`](src/graph/inmemory.rs:27) is the concrete backend marker type.
 
 ### GraphDecomposition trait
 
-[`GraphDecomposition`](src/graph/mod.rs:188) is the read-only query interface:
+[`GraphDecomposition`](src/graph/mod.rs:192) is the read-only query interface:
 
-- [`get_graph(label)`](src/graph/mod.rs:192) — returns `Arc<LagraphGraph>` for a given edge label.
-- [`get_node_id(string_id)`](src/graph/mod.rs:195) / [`get_node_name(mapped_id)`](src/graph/mod.rs:198) — bidirectional string ↔ integer dictionary.
-- [`num_nodes()`](src/graph/mod.rs:199) — total unique nodes.
+- [`get_graph(label)`](src/graph/mod.rs:196) — returns `Arc<LagraphGraph>` for a given edge label.
+- [`get_node_id(string_id)`](src/graph/mod.rs:199) / [`get_node_name(mapped_id)`](src/graph/mod.rs:202) — bidirectional string ↔ integer dictionary.
+- [`num_nodes()`](src/graph/mod.rs:203) — total unique nodes.
 
 ### InMemoryBuilder / InMemoryGraph
 
-[`InMemoryBuilder`](src/graph/inmemory.rs:35) is the primary `GraphBuilder` implementation.
+[`InMemoryBuilder`](src/graph/inmemory.rs:36) is the primary `GraphBuilder` implementation.
 It collects edges in RAM, then [`build()`](src/graph/inmemory.rs:131) calls
 GraphBLAS to create one `GrB_Matrix` per label via COO format, wraps each in an
-`LAGraph_Graph`, and returns an [`InMemoryGraph`](src/graph/inmemory.rs:173).
+`LAGraph_Graph`, and returns an [`InMemoryGraph`](src/graph/inmemory.rs:174).
 
 Multiple CSV sources can be chained with repeated `.load()` calls; all edges are merged
 into a single graph.
@@ -196,7 +196,7 @@ which is used by the MatrixMarket loader.
 
 ### Format parsers
 
-Two built-in parsers are available:
+CSV and MatrixMarket edge loaders are available:
 
 #### CSV format
 
@@ -272,6 +272,42 @@ The module also handles spargebra's desugaring of sequence paths
 (`?x <a>/<b>/<c> ?y`) from a chain of BGP triples back into a single
 [`PropertyPathExpression::Sequence`].
 
+### SPARQL parsing (`src/sparql/mod.rs`)
+
+The [`sparql`](src/sparql/mod.rs) module uses the [`spargebra`](https://crates.io/crates/spargebra)
+crate to parse SPARQL 1.1 query strings and extract the single property-path
+triple pattern that pathrex's RPQ evaluators operate on.
+
+**Supported query form:** `SELECT` queries with exactly one triple or property
+path pattern in the `WHERE` clause, e.g.:
+
+```sparql
+SELECT ?x ?y WHERE { ?x <knows>/<likes>* ?y . }
+```
+
+Key public items:
+
+- [`parse_query(sparql)`](src/sparql/mod.rs:45) — parses a SPARQL string into a
+  [`spargebra::Query`].
+- [`extract_path(query)`](src/sparql/mod.rs:67) — validates a parsed `Query` is a
+  `SELECT` with a single path pattern and returns a [`PathTriple`](src/sparql/mod.rs:56).
+- [`parse_rpq(sparql)`](src/sparql/mod.rs:190) — convenience function combining
+  `parse_query` + `extract_path` in one call.
+- [`PathTriple`](src/sparql/mod.rs:56) — holds the extracted `subject`
+  ([`TermPattern`]), `path` ([`PropertyPathExpression`]), and `object`
+  ([`TermPattern`]).
+- [`ExtractError`](src/sparql/mod.rs:25) — error enum for extraction failures
+  (`NotSelect`, `NotSinglePath`, `UnsupportedSubject`, `UnsupportedObject`,
+  `VariablePredicate`).
+- [`RpqParseError`](src/sparql/mod.rs:198) — combined error for [`parse_rpq`]
+  wrapping both [`SparqlSyntaxError`] and [`ExtractError`].
+- [`DEFAULT_BASE_IRI`](src/sparql/mod.rs:38) — `"http://example.org/"`, the
+  default base IRI constant.
+
+The module also handles spargebra's desugaring of sequence paths
+(`?x <a>/<b>/<c> ?y`) from a chain of BGP triples back into a single
+[`PropertyPathExpression::Sequence`].
+
 ### FFI layer
 
 [`lagraph_sys`](src/lagraph_sys.rs) exposes raw C bindings for GraphBLAS and
@@ -280,7 +316,7 @@ LAGraph. Safe Rust wrappers live in [`graph::mod`](src/graph/mod.rs):
 - [`LagraphGraph`](src/graph/mod.rs:48) — RAII wrapper around `LAGraph_Graph` (calls
   `LAGraph_Delete` on drop). Also provides
   [`LagraphGraph::from_coo()`](src/graph/mod.rs:85) to build directly from COO arrays.
-- [`GraphblasVector`](src/graph/mod.rs:124) — RAII wrapper around `GrB_Vector`.
+- [`GraphblasVector`](src/graph/mod.rs:128) — RAII wrapper around `GrB_Vector`.
 - [`ensure_grb_init()`](src/graph/mod.rs:39) — one-time `LAGraph_Init` via `std::sync::Once`.
 
 ### Macros (`src/utils.rs`)
