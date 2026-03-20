@@ -14,7 +14,7 @@ pathrex/
 ├── Cargo.toml                  # Crate manifest (edition 2024)
 ├── build.rs                    # Links LAGraph + LAGraphX; optionally regenerates FFI bindings
 ├── src/
-│   ├── lib.rs                  # Public modules: graph, formats, lagraph_sys; utils is pub(crate)
+│   ├── lib.rs                  # Public modules: formats, graph, sparql, lagraph_sys, utils
 │   ├── main.rs                 # Binary entry point (placeholder)
 │   ├── lagraph_sys.rs          # FFI module — includes generated bindings
 │   ├── lagraph_sys_generated.rs# Bindgen output (checked in, regenerated in CI)
@@ -24,6 +24,8 @@ pathrex/
 │   │   ├── mod.rs              # Core traits (GraphBuilder, GraphDecomposition, GraphSource,
 │   │   │                       #   Backend, Graph<B>), error types, RAII wrappers, GrB init
 │   │   └── inmemory.rs         # InMemory marker, InMemoryBuilder, InMemoryGraph
+│   ├── sparql/
+│   │   └── mod.rs              # SPARQL parsing (spargebra), PathTriple extraction, parse_rpq
 │   └── formats/
 │       ├── mod.rs              # FormatError enum, re-exports
 │       ├── csv.rs              # Csv<R> — CSV → Edge iterator (CsvConfig, ColumnSpec)
@@ -216,7 +218,7 @@ Name-based lookup requires `has_header: true`.
 
 #### MatrixMarket directory format
 
-[`MatrixMarket`](src/formats/mm.rs:160) loads an edge-labeled graph from a directory with:
+[`MatrixMarket`](src/formats/mm.rs:159) loads an edge-labeled graph from a directory with:
 
 - `vertices.txt` — one line per node: `<node_name> <1-based-index>` on disk; [`get_node_id`](src/graph/mod.rs:199) returns the matching **0-based** matrix index
 - `edges.txt` — one line per label: `<label_name> <1-based-index>` (selects `n.txt`)
@@ -228,11 +230,47 @@ converted to 0-based and installed via [`InMemoryBuilder::set_node_map()`](src/g
 
 Helper functions:
 
-- [`load_mm_file(path)`](src/formats/mm.rs:64) — reads a single MatrixMarket file into a
+- [`load_mm_file(path)`](src/formats/mm.rs:39) — reads a single MatrixMarket file into a
   `GrB_Matrix`.
-- [`parse_index_map(path)`](src/formats/mm.rs) — parses `<name> <index>` lines; indices must be **>= 1** and **unique** within the file.
+- [`parse_index_map(path)`](src/formats/mm.rs:81) — parses `<name> <index>` lines; indices must be **>= 1** and **unique** within the file.
 
-`MatrixMarket` implements `GraphSource<InMemoryBuilder>` in [`src/graph/inmemory.rs`](src/graph/inmemory.rs): `vertices.txt` maps are converted from 1-based file indices to 0-based matrix ids before [`set_node_map`](src/graph/inmemory.rs:67); `edges.txt` indices are unchanged for `n.txt` lookup.
+`MatrixMarket` implements `GraphSource<InMemoryBuilder>` in [`src/graph/inmemory.rs`](src/graph/inmemory.rs) (see the `impl` at line 215): `vertices.txt` maps are converted from 1-based file indices to 0-based matrix ids before [`set_node_map`](src/graph/inmemory.rs:67); `edges.txt` indices are unchanged for `n.txt` lookup.
+
+### SPARQL parsing (`src/sparql/mod.rs`)
+
+The [`sparql`](src/sparql/mod.rs) module uses the [`spargebra`](https://crates.io/crates/spargebra)
+crate to parse SPARQL 1.1 query strings and extract the single property-path
+triple pattern that pathrex's RPQ evaluators operate on.
+
+**Supported query form:** `SELECT` queries with exactly one triple or property
+path pattern in the `WHERE` clause, e.g.:
+
+```sparql
+SELECT ?x ?y WHERE { ?x <knows>/<likes>* ?y . }
+```
+
+Key public items:
+
+- [`parse_query(sparql)`](src/sparql/mod.rs:45) — parses a SPARQL string into a
+  [`spargebra::Query`].
+- [`extract_path(query)`](src/sparql/mod.rs:67) — validates a parsed `Query` is a
+  `SELECT` with a single path pattern and returns a [`PathTriple`](src/sparql/mod.rs:56).
+- [`parse_rpq(sparql)`](src/sparql/mod.rs:190) — convenience function combining
+  `parse_query` + `extract_path` in one call.
+- [`PathTriple`](src/sparql/mod.rs:56) — holds the extracted `subject`
+  ([`TermPattern`]), `path` ([`PropertyPathExpression`]), and `object`
+  ([`TermPattern`]).
+- [`ExtractError`](src/sparql/mod.rs:25) — error enum for extraction failures
+  (`NotSelect`, `NotSinglePath`, `UnsupportedSubject`, `UnsupportedObject`,
+  `VariablePredicate`).
+- [`RpqParseError`](src/sparql/mod.rs:198) — combined error for [`parse_rpq`]
+  wrapping both `spargebra::SparqlSyntaxError` and [`ExtractError`].
+- [`DEFAULT_BASE_IRI`](src/sparql/mod.rs:38) — `"http://example.org/"`, the
+  default base IRI constant.
+
+The module also handles spargebra's desugaring of sequence paths
+(`?x <a>/<b>/<c> ?y`) from a chain of BGP triples back into a single
+[`PropertyPathExpression::Sequence`].
 
 ### FFI layer
 
@@ -285,6 +323,8 @@ Tests in `src/graph/mod.rs` use `CountingBuilder` / `CountOutput` / `VecSource` 
 native libraries.
 
 Tests in `src/formats/csv.rs` are pure Rust and need no native dependencies.
+
+Tests in `src/sparql/mod.rs` are pure Rust and need no native dependencies.
 
 Tests in `src/graph/inmemory.rs` and [`tests/inmemory_tests.rs`](tests/inmemory_tests.rs)
 call real GraphBLAS/LAGraph and require the native libraries to be present.
