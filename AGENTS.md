@@ -24,6 +24,9 @@ pathrex/
 │   │   ├── mod.rs              # Core traits (GraphBuilder, GraphDecomposition, GraphSource,
 │   │   │                       #   Backend, Graph<B>), error types, RAII wrappers, GrB init
 │   │   └── inmemory.rs         # InMemory marker, InMemoryBuilder, InMemoryGraph
+│   ├── rpq/
+│   │   ├── mod.rs              # RpqEvaluator (assoc. Result), RpqQuery, Endpoint, PathExpr, RpqError
+│   │   └── rpqmatrix.rs        # Matrix-plan RPQ evaluator
 │   ├── sparql/
 │   │   └── mod.rs              # parse_rpq / extract_rpq → RpqQuery (spargebra)
 │   └── formats/
@@ -32,7 +35,8 @@ pathrex/
 │       └── mm.rs               # MatrixMarket directory loader (vertices.txt, edges.txt, *.txt)
 ├── tests/
 │   ├── inmemory_tests.rs       # Integration tests for InMemoryBuilder / InMemoryGraph
-│   └── mm_tests.rs             # Integration tests for MatrixMarket format
+│   ├── mm_tests.rs             # Integration tests for MatrixMarket format
+│   └── rpqmatrix_tests.rs      # Integration tests for matrix-plan RPQ evaluator
 ├── deps/
 │   └── LAGraph/                # Git submodule (SparseLinearAlgebra/LAGraph)
 └── .github/workflows/ci.yml   # CI: build GraphBLAS + LAGraph, cargo build & test
@@ -273,6 +277,42 @@ and the parsed query contains full IRIs sharing a common prefix.
 
 The module handles spargebra's desugaring of sequence paths (`?x <a>/<b>/<c> ?y`)
 from a chain of BGP triples back into a single path expression.
+
+### RPQ evaluation (`src/rpq/`)
+
+The [`rpq`](src/rpq/mod.rs) module provides an abstraction for evaluating
+Regular Path Queries (RPQs) over edge-labeled graphs using GraphBLAS/LAGraph.
+
+Key public items:
+
+- [`Endpoint`](src/rpq/mod.rs) — `Variable(String)` or `Named(String)` (IRI string).
+- [`PathExpr`](src/rpq/mod.rs) — `Label`, `Sequence`, `Alternative`, `ZeroOrMore`,
+  `OneOrMore`, `ZeroOrOne`.
+- [`RpqQuery`](src/rpq/mod.rs) — `{ subject, path, object }` using the types above;
+  [`strip_base(&mut self, base)`](src/rpq/mod.rs) removes a shared IRI prefix from
+  named endpoints and labels.
+- [`RpqEvaluator`](src/rpq/mod.rs) — trait with associated type `Result` and
+  [`evaluate(query, graph)`](src/rpq/mod.rs) taking `&RpqQuery` and
+  [`GraphDecomposition`], returning `Result<Self::Result, RpqError>`.
+  Each concrete evaluator exposes its own output type (see below).
+- [`RpqError`](src/rpq/mod.rs) — unified error type for RPQ parsing and evaluation:
+  `Parse` (SPARQL syntax), `Extract` (query extraction), `UnsupportedPath`,
+  `VertexNotFound`, and `Graph` (wraps [`GraphError`](src/graph/mod.rs) for
+  label-not-found and GraphBLAS/LAGraph failures).
+
+[`NfaRpqResult`](src/rpq/nfarpq.rs) wraps a [`GraphblasVector`] of reachable **target**
+vertices. When the subject is a variable, every vertex is used as a source and
+`LAGraph_RegularPathQuery` returns the union of targets — individual `(source, target)`
+pairs are not preserved.
+
+#### `RpqMatrixEvaluator` (`src/rpq/rpqmatrix.rs`)
+
+[`RpqMatrixEvaluator`](src/rpq/rpqmatrix.rs) compiles [`PathExpr`] into a Boolean matrix plan
+over label adjacency matrices and runs [`LAGraph_RPQMatrix`]. It returns
+[`RpqMatrixResult`](src/rpq/rpqmatrix.rs): the path-relation `nnz` plus a
+[`GraphblasMatrix`] duplicate of the result matrix (full reachability relation for the path).
+Subject/object do not filter the matrix; a named subject is only validated to exist.
+Bound objects are not supported yet ([`RpqError::UnsupportedPath`]).
 
 ### FFI layer
 
