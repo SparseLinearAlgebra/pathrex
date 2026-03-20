@@ -10,6 +10,8 @@
 //! let result: NfaRpqResult = NfaRpqEvaluator.evaluate(&query, &graph)?;
 //! ```
 
+pub mod nfarpq;
+
 use crate::graph::{GraphDecomposition, GraphError};
 use crate::sparql::ExtractError;
 use spargebra::SparqlSyntaxError;
