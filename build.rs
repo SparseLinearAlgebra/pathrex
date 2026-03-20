@@ -74,6 +74,8 @@ fn regenerate_bindings() {
         .allowlist_function("GrB_Vector_extractTuples_BOOL")
         .allowlist_function("GrB_vxm")
         .allowlist_item("LAGRAPH_MSG_LEN")
+        .allowlist_item("RPQMatrixOp")
+        .allowlist_type("RPQMatrixPlan")
         .allowlist_type("LAGraph_Graph")
         .allowlist_type("LAGraph_Kind")
         .allowlist_function("LAGraph_CheckGraph")
