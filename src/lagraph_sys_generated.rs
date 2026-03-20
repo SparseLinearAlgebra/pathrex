@@ -261,6 +261,21 @@ unsafe extern "C" {
         msg: *mut ::std::os::raw::c_char,
     ) -> ::std::os::raw::c_int;
 }
+unsafe extern "C" {
+    pub fn LAGraph_RegularPathQuery(
+        reachable: *mut GrB_Vector,
+        R: *mut LAGraph_Graph,
+        nl: usize,
+        QS: *const GrB_Index,
+        nqs: usize,
+        QF: *const GrB_Index,
+        nqf: usize,
+        G: *mut LAGraph_Graph,
+        S: *const GrB_Index,
+        ns: usize,
+        msg: *mut ::std::os::raw::c_char,
+    ) -> ::std::os::raw::c_int;
+}
 #[repr(u32)]
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
 pub enum RPQMatrixOp {

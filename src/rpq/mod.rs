@@ -7,6 +7,7 @@
 //! let result = NfaRpqEvaluator.evaluate(&triple.subject, &triple.path, &triple.object, &graph)?;
 //! ```
 
+pub mod nfarpq;
 pub mod rpqmatrix;
 
 use crate::graph::GraphDecomposition;
