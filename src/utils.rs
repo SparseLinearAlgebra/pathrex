@@ -1,6 +1,26 @@
 use crate::{graph::*, lagraph_sys::*};
 use std::{fmt::Display, sync::Arc};
 
+pub fn build_graph(edges: &[(&str, &str, &str)]) -> <InMemory as Backend>::Graph {
+    let builder = InMemoryBuilder::new();
+    let edges = edges
+        .iter()
+        .cloned()
+        .map(|(s, t, l)| {
+            Ok(Edge {
+                source: s.to_string(),
+                label: l.to_string(),
+                target: t.to_string(),
+            })
+        })
+        .collect::<Vec<Result<Edge, GraphError>>>();
+    builder
+        .with_stream(edges.into_iter())
+        .expect("Should insert edges stream")
+        .build()
+        .expect("build must succeed")
+}
+
 pub struct CountOutput<E: std::error::Error>(pub usize, std::marker::PhantomData<E>);
 
 impl<E: std::error::Error> CountOutput<E> {

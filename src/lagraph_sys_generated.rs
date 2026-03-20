@@ -261,3 +261,32 @@ unsafe extern "C" {
         msg: *mut ::std::os::raw::c_char,
     ) -> ::std::os::raw::c_int;
 }
+#[repr(u32)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+pub enum RPQMatrixOp {
+    RPQ_MATRIX_OP_LABEL = 0,
+    RPQ_MATRIX_OP_LOR = 1,
+    RPQ_MATRIX_OP_CONCAT = 2,
+    RPQ_MATRIX_OP_KLEENE = 3,
+    RPQ_MATRIX_OP_KLEENE_L = 4,
+    RPQ_MATRIX_OP_KLEENE_R = 5,
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct RPQMatrixPlan {
+    pub op: RPQMatrixOp,
+    pub lhs: *mut RPQMatrixPlan,
+    pub rhs: *mut RPQMatrixPlan,
+    pub mat: GrB_Matrix,
+    pub res_mat: GrB_Matrix,
+}
+unsafe extern "C" {
+    pub fn LAGraph_RPQMatrix(
+        nnz: *mut GrB_Index,
+        plan: *mut RPQMatrixPlan,
+        msg: *mut ::std::os::raw::c_char,
+    ) -> GrB_Info;
+}
+unsafe extern "C" {
+    pub fn LAGraph_DestroyRpqMatrixPlan(plan: *mut RPQMatrixPlan) -> GrB_Info;
+}
