@@ -354,7 +354,7 @@ mod tests {
             .expect("build should succeed");
 
         assert_eq!(graph.num_nodes(), 3);
-        assert!(graph.get_graph("knows").is_ok());
-        assert!(graph.get_graph("likes").is_ok());
+        assert!(graph.get_graph("http://example.org/knows").is_ok());
+        assert!(graph.get_graph("http://example.org/likes").is_ok());
     }
 }

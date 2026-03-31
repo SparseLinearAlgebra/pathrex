@@ -30,7 +30,7 @@ pathrex/
 │       ├── mod.rs              # FormatError enum, re-exports
 │       ├── csv.rs              # Csv<R> — CSV → Edge iterator (CsvConfig, ColumnSpec)
 │       ├── mm.rs               # MatrixMarket directory loader (vertices.txt, edges.txt, *.txt)
-│       └── nt.rs               # NTriples<R> — N-Triples → Edge iterator (LabelExtraction)
+│       └── nt.rs               # NTriples<R> — N-Triples → Edge iterator (full predicate IRI labels)
 ├── tests/
 │   ├── inmemory_tests.rs       # Integration tests for InMemoryBuilder / InMemoryGraph
 │   └── mm_tests.rs             # Integration tests for MatrixMarket format
@@ -279,24 +279,18 @@ from a chain of BGP triples back into a single path expression.
 
 #### `NTriples<R>`
 
-[`NTriples<R>`](src/formats/nt.rs:64) parses [W3C N-Triples](https://www.w3.org/TR/n-triples/)
+[`NTriples<R>`](src/formats/nt.rs:51) parses [W3C N-Triples](https://www.w3.org/TR/n-triples/)
 RDF files using `oxttl` and `oxrdf`. Each triple `(subject, predicate, object)` becomes an
 [`Edge`](src/graph/mod.rs:158) where:
 
 - `source` — subject IRI or blank-node ID (`_:label`).
 - `target` — object IRI or blank-node ID; triples whose object is an RDF
   literal yield `Err(FormatError::LiteralAsNode)` (callers may filter these out).
-- `label` — predicate IRI, transformed by [`LabelExtraction`](src/formats/nt.rs:38):
+- `label` — full predicate IRI string (including fragment `#…` when present).
 
-| Variant | Behaviour |
-|---|---|
-| `LocalName` (default) | Fragment (`#name`) or last path segment of the predicate IRI |
-| `FullIri` | Full predicate IRI string |
+Constructor:
 
-Constructors:
-
-- [`NTriples::new(reader)`](src/formats/nt.rs:70) — uses `LabelExtraction::LocalName`.
-- [`NTriples::with_label_extraction(reader, strategy)`](src/formats/nt.rs:74) — explicit strategy.
+- [`NTriples::new(reader)`](src/formats/nt.rs:56) — parses the stream; each predicate IRI is copied verbatim to the edge label.
 
 ### FFI layer
 

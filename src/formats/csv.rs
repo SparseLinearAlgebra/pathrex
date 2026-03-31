@@ -231,6 +231,25 @@ mod tests {
     }
 
     #[test]
+    fn test_non_ascii() {
+        let csv = "source,target,label\n\
+人甲,人乙,认识\n\
+Алиса,Боб,знает\n";
+        let edges: Vec<_> = make_csv(csv).collect();
+        assert_eq!(edges.len(), 2);
+
+        let e0 = edges[0].as_ref().unwrap();
+        assert_eq!(e0.source, "人甲");
+        assert_eq!(e0.target, "人乙");
+        assert_eq!(e0.label, "认识");
+
+        let e1 = edges[1].as_ref().unwrap();
+        assert_eq!(e1.source, "Алиса");
+        assert_eq!(e1.target, "Боб");
+        assert_eq!(e1.label, "знает");
+    }
+
+    #[test]
     fn test_graph_source_impl() {
         use crate::graph::{GraphBuilder, GraphDecomposition, InMemoryBuilder};
 
