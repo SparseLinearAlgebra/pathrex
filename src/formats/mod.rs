@@ -63,6 +63,6 @@ pub enum FormatError {
 
     /// An RDF literal appeared as a subject or object where a node IRI or
     /// blank node was expected.
-    #[error("RDF literal cannot be used as a graph node (triple skipped)")]
+    #[error("RDF literal cannot be used as a graph node")]
     LiteralAsNode,
 }

@@ -33,7 +33,7 @@ pathrex/
 │       ├── mod.rs              # FormatError enum, re-exports
 │       ├── csv.rs              # Csv<R> — CSV → Edge iterator (CsvConfig, ColumnSpec)
 │       ├── mm.rs               # MatrixMarket directory loader (vertices.txt, edges.txt, *.txt)
-│       └── nt.rs               # NTriples<R> — N-Triples → Edge iterator (LabelExtraction)
+│       └── nt.rs               # NTriples<R> — N-Triples → Edge iterator (full predicate IRI labels)
 ├── tests/
 │   ├── inmemory_tests.rs       # Integration tests for InMemoryBuilder / InMemoryGraph
 │   ├── mm_tests.rs             # Integration tests for MatrixMarket format
@@ -337,6 +337,18 @@ over label adjacency matrices and runs [`LAGraph_RPQMatrix`]. It returns
 [`GraphblasMatrix`] duplicate of the result matrix (full reachability relation for the path).
 Subject/object do not filter the matrix; a named subject is only validated to exist.
 Bound objects are not supported yet ([`RpqError::UnsupportedPath`]).
+[`NTriples<R>`](src/formats/nt.rs:51) parses [W3C N-Triples](https://www.w3.org/TR/n-triples/)
+RDF files using `oxttl` and `oxrdf`. Each triple `(subject, predicate, object)` becomes an
+[`Edge`](src/graph/mod.rs:158) where:
+
+- `source` — subject IRI or blank-node ID (`_:label`).
+- `target` — object IRI or blank-node ID; triples whose object is an RDF
+  literal yield `Err(FormatError::LiteralAsNode)` (callers may filter these out).
+- `label` — full predicate IRI string (including fragment `#…` when present).
+
+Constructor:
+
+- [`NTriples::new(reader)`](src/formats/nt.rs:56) — parses the stream; each predicate IRI is copied verbatim to the edge label.
 
 ### FFI layer
 
