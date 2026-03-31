@@ -1,7 +1,8 @@
 use std::sync::Arc;
 use std::{collections::HashMap, io::Read};
 
-use crate::formats::Csv;
+use crate::formats::mm::{load_mm_file, parse_index_map};
+use crate::formats::{Csv, MatrixMarket};
 use crate::{
     graph::GraphSource,
     lagraph_sys::{GrB_Index, GrB_Matrix, GrB_Matrix_free, LAGraph_Kind},
@@ -33,9 +34,10 @@ impl Backend for InMemory {
 /// Accumulates edges in RAM and compiles them into an [`InMemoryGraph`].
 #[derive(Default)]
 pub struct InMemoryBuilder {
-    node_to_id: HashMap<String, u64>,
-    id_to_node: Vec<String>,
-    label_buffers: HashMap<String, Vec<(u64, u64)>>,
+    node_to_id: HashMap<String, usize>,
+    id_to_node: HashMap<usize, String>,
+    next_id: usize,
+    label_buffers: HashMap<String, Vec<(usize, usize)>>,
     prebuilt: HashMap<String, LagraphGraph>,
 }
 
@@ -43,20 +45,39 @@ impl InMemoryBuilder {
     pub fn new() -> Self {
         Self {
             node_to_id: HashMap::new(),
-            id_to_node: Vec::new(),
+            id_to_node: HashMap::new(),
+            next_id: 0,
             label_buffers: HashMap::new(),
             prebuilt: HashMap::new(),
         }
     }
 
-    fn insert_node(&mut self, node: &str) -> u64 {
+    fn insert_node(&mut self, node: &str) -> usize {
         if let Some(&id) = self.node_to_id.get(node) {
             return id;
         }
-        let id = self.id_to_node.len() as u64;
-        self.id_to_node.push(node.to_owned());
+        let id = self.next_id;
+        self.next_id += 1;
+        self.id_to_node.insert(id, node.to_owned());
         self.node_to_id.insert(node.to_owned(), id);
         id
+    }
+
+    /// Bulk-install the node mapping. Replaces any previously inserted nodes.
+    pub fn set_node_map(
+        &mut self,
+        by_idx: HashMap<usize, String>,
+        by_name: HashMap<String, usize>,
+    ) {
+        self.id_to_node = by_idx;
+        self.node_to_id = by_name;
+        self.next_id = self
+            .id_to_node
+            .keys()
+            .copied()
+            .max()
+            .map(|m| m + 1)
+            .unwrap_or(0);
     }
 
     pub fn push_edge(&mut self, edge: Edge) -> Result<(), GraphError> {
@@ -110,7 +131,13 @@ impl GraphBuilder for InMemoryBuilder {
     fn build(self) -> Result<InMemoryGraph, GraphError> {
         ensure_grb_init()?;
 
-        let n = self.id_to_node.len() as GrB_Index;
+        let n: GrB_Index = self
+            .id_to_node
+            .keys()
+            .copied()
+            .max()
+            .map(|m| m + 1)
+            .unwrap_or(0) as GrB_Index;
 
         let mut graphs: HashMap<String, Arc<LagraphGraph>> =
             HashMap::with_capacity(self.label_buffers.len() + self.prebuilt.len());
@@ -120,8 +147,8 @@ impl GraphBuilder for InMemoryBuilder {
         }
 
         for (label, pairs) in &self.label_buffers {
-            let rows: Vec<GrB_Index> = pairs.iter().map(|(r, _)| *r).collect();
-            let cols: Vec<GrB_Index> = pairs.iter().map(|(_, c)| *c).collect();
+            let rows: Vec<GrB_Index> = pairs.iter().map(|(r, _)| *r as GrB_Index).collect();
+            let cols: Vec<GrB_Index> = pairs.iter().map(|(_, c)| *c as GrB_Index).collect();
             let vals: Vec<bool> = vec![true; pairs.len()];
 
             let lg = LagraphGraph::from_coo(
@@ -135,14 +162,8 @@ impl GraphBuilder for InMemoryBuilder {
             graphs.insert(label.clone(), Arc::new(lg));
         }
 
-        let node_to_id: HashMap<String, usize> = self
-            .node_to_id
-            .into_iter()
-            .map(|(k, v)| (k, v as usize))
-            .collect();
-
         Ok(InMemoryGraph {
-            node_to_id,
+            node_to_id: self.node_to_id,
             id_to_node: self.id_to_node,
             graphs,
         })
@@ -152,7 +173,7 @@ impl GraphBuilder for InMemoryBuilder {
 /// Immutable, read-only Boolean-decomposed graph backed by LAGraph graphs.
 pub struct InMemoryGraph {
     node_to_id: HashMap<String, usize>,
-    id_to_node: Vec<String>,
+    id_to_node: HashMap<usize, String>,
     graphs: HashMap<String, Arc<LagraphGraph>>,
 }
 
@@ -171,7 +192,7 @@ impl GraphDecomposition for InMemoryGraph {
     }
 
     fn get_node_name(&self, mapped_id: usize) -> Option<String> {
-        self.id_to_node.get(mapped_id).cloned()
+        self.id_to_node.get(&mapped_id).cloned()
     }
 
     fn num_nodes(&self) -> usize {
@@ -187,6 +208,29 @@ impl<R: Read> GraphSource<InMemoryBuilder> for Csv<R> {
         for item in self {
             builder.push_edge(item?)?;
         }
+        Ok(builder)
+    }
+}
+
+impl GraphSource<InMemoryBuilder> for MatrixMarket {
+    fn apply_to(self, mut builder: InMemoryBuilder) -> Result<InMemoryBuilder, GraphError> {
+        let vertices_path = self.dir.join("vertices.txt");
+        let (vert_by_idx, vert_by_name) = parse_index_map(&vertices_path)?;
+        let vert_by_idx  =
+            vert_by_idx.into_iter().map(|(i, n)| (i - 1, n)).collect();
+        let vert_by_name =
+            vert_by_name.into_iter().map(|(n, i)| (n, i - 1)).collect();
+
+        let (edge_by_idx, _) = parse_index_map(&self.dir.join("edges.txt"))?;
+
+        builder.set_node_map(vert_by_idx, vert_by_name);
+
+        for (idx, label) in edge_by_idx {
+            let path = self.mm_path(idx);
+            let matrix = load_mm_file(&path)?;
+            builder.push_grb_matrix(label, matrix)?;
+        }
+
         Ok(builder)
     }
 }

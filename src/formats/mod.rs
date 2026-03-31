@@ -14,10 +14,14 @@
 //! ```
 
 pub mod csv;
+pub mod mm;
 
 pub use csv::Csv;
+pub use mm::MatrixMarket;
 
 use thiserror::Error;
+
+use crate::lagraph_sys::GrB_Info;
 
 /// Unified error type for all format parsing operations.
 #[derive(Error, Debug)]
@@ -33,4 +37,16 @@ pub enum FormatError {
     /// An I/O error occurred while reading the data source.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+
+    /// [`LAGraph_MMRead`](crate::lagraph_sys::LAGraph_MMRead) returned a
+    /// non-zero info code while reading a MatrixMarket file.
+    #[error("MatrixMarket read error (code {code}): {message}")]
+    MatrixMarket { code: GrB_Info, message: String },
+
+    #[error("Invalid format in '{file}' at line {line}: {reason}")]
+    InvalidFormat {
+        file: String,
+        line: usize,
+        reason: String,
+    },
 }

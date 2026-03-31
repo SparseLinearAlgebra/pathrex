@@ -109,7 +109,7 @@ impl LagraphGraph {
         Self::new(matrix, kind)
     }
 
-    pub fn check_graph(&self) -> Result<(), GraphError>  {
+    pub fn check_graph(&self) -> Result<(), GraphError> {
         la_ok!(LAGraph_CheckGraph(self.inner))
     }
 }
