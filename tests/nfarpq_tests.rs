@@ -1,24 +1,30 @@
 use pathrex::graph::GraphDecomposition;
 use pathrex::lagraph_sys::{GrB_Index, GrB_Vector_extractTuples_BOOL, GrB_Vector_nvals};
-use pathrex::rpq::nfarpq::NfaRpqEvaluator;
-use pathrex::rpq::{RpqError, RpqEvaluator, RpqResult};
+use pathrex::rpq::nfarpq::{NfaRpqEvaluator, NfaRpqResult};
+use pathrex::rpq::{Endpoint, PathExpr, RpqError, RpqEvaluator, RpqQuery};
 use pathrex::utils::build_graph;
-use spargebra::algebra::PropertyPathExpression;
-use spargebra::term::{NamedNode, TermPattern, Variable};
 
-fn named(iri: &str) -> PropertyPathExpression {
-    PropertyPathExpression::NamedNode(NamedNode::new_unchecked(iri))
+fn label(s: &str) -> PathExpr {
+    PathExpr::Label(s.to_string())
 }
 
-fn var(name: &str) -> TermPattern {
-    TermPattern::Variable(Variable::new_unchecked(name))
+fn var(name: &str) -> Endpoint {
+    Endpoint::Variable(name.to_string())
 }
 
-fn named_term(iri: &str) -> TermPattern {
-    TermPattern::NamedNode(NamedNode::new_unchecked(iri))
+fn named_ep(s: &str) -> Endpoint {
+    Endpoint::Named(s.to_string())
 }
 
-fn reachable_indices(result: &RpqResult) -> Vec<GrB_Index> {
+fn rq(subject: Endpoint, path: PathExpr, object: Endpoint) -> RpqQuery {
+    RpqQuery {
+        subject,
+        path,
+        object,
+    }
+}
+
+fn reachable_indices(result: &NfaRpqResult) -> Vec<GrB_Index> {
     unsafe {
         let mut nvals: GrB_Index = 0;
         GrB_Vector_nvals(&mut nvals, result.reachable.inner);
@@ -38,7 +44,7 @@ fn reachable_indices(result: &RpqResult) -> Vec<GrB_Index> {
     }
 }
 
-fn reachable_count(result: &RpqResult) -> u64 {
+fn reachable_count(result: &NfaRpqResult) -> u64 {
     unsafe {
         let mut nvals: GrB_Index = 0;
         GrB_Vector_nvals(&mut nvals, result.reachable.inner);
@@ -54,7 +60,7 @@ fn test_single_label_variable_variable() {
     let evaluator = NfaRpqEvaluator;
 
     let result = evaluator
-        .evaluate(&var("x"), &named("knows"), &var("y"), &graph)
+        .evaluate(&rq(var("x"), label("knows"), var("y")), &graph)
         .expect("evaluate should succeed");
 
     let count = reachable_count(&result);
@@ -69,7 +75,7 @@ fn test_single_label_named_source() {
     let evaluator = NfaRpqEvaluator;
 
     let result = evaluator
-        .evaluate(&named_term("A"), &named("knows"), &var("y"), &graph)
+        .evaluate(&rq(named_ep("A"), label("knows"), var("y")), &graph)
         .expect("evaluate should succeed");
 
     let indices = reachable_indices(&result);
@@ -87,10 +93,10 @@ fn test_sequence_path() {
     let graph = build_graph(&[("A", "B", "knows"), ("B", "C", "likes")]);
     let evaluator = NfaRpqEvaluator;
 
-    let path = PropertyPathExpression::Sequence(Box::new(named("knows")), Box::new(named("likes")));
+    let path = PathExpr::Sequence(Box::new(label("knows")), Box::new(label("likes")));
 
     let result = evaluator
-        .evaluate(&var("x"), &path, &var("y"), &graph)
+        .evaluate(&rq(var("x"), path, var("y")), &graph)
         .expect("evaluate should succeed");
 
     let count = reachable_count(&result);
@@ -104,10 +110,10 @@ fn test_sequence_path_named_source() {
     let graph = build_graph(&[("A", "B", "knows"), ("B", "C", "likes")]);
     let evaluator = NfaRpqEvaluator;
 
-    let path = PropertyPathExpression::Sequence(Box::new(named("knows")), Box::new(named("likes")));
+    let path = PathExpr::Sequence(Box::new(label("knows")), Box::new(label("likes")));
 
     let result = evaluator
-        .evaluate(&named_term("A"), &path, &var("y"), &graph)
+        .evaluate(&rq(named_ep("A"), path, var("y")), &graph)
         .expect("evaluate should succeed");
 
     let indices = reachable_indices(&result);
@@ -119,17 +125,16 @@ fn test_sequence_path_named_source() {
 }
 
 /// Graph: A --knows--> B, A --likes--> C
-/// Query: ?x <knows>|<likes> ?y
+/// Query: <A> <knows>|<likes> ?y
 #[test]
 fn test_alternative_path() {
     let graph = build_graph(&[("A", "B", "knows"), ("A", "C", "likes")]);
     let evaluator = NfaRpqEvaluator;
 
-    let path =
-        PropertyPathExpression::Alternative(Box::new(named("knows")), Box::new(named("likes")));
+    let path = PathExpr::Alternative(Box::new(label("knows")), Box::new(label("likes")));
 
     let result = evaluator
-        .evaluate(&named_term("A"), &path, &var("y"), &graph)
+        .evaluate(&rq(named_ep("A"), path, var("y")), &graph)
         .expect("evaluate should succeed");
 
     let indices = reachable_indices(&result);
@@ -152,10 +157,10 @@ fn test_zero_or_more_path() {
     let graph = build_graph(&[("A", "B", "knows"), ("B", "C", "knows")]);
     let evaluator = NfaRpqEvaluator;
 
-    let path = PropertyPathExpression::ZeroOrMore(Box::new(named("knows")));
+    let path = PathExpr::ZeroOrMore(Box::new(label("knows")));
 
     let result = evaluator
-        .evaluate(&named_term("A"), &path, &var("y"), &graph)
+        .evaluate(&rq(named_ep("A"), path, var("y")), &graph)
         .expect("evaluate should succeed");
 
     let indices = reachable_indices(&result);
@@ -184,10 +189,10 @@ fn test_one_or_more_path() {
     let graph = build_graph(&[("A", "B", "knows"), ("B", "C", "knows")]);
     let evaluator = NfaRpqEvaluator;
 
-    let path = PropertyPathExpression::OneOrMore(Box::new(named("knows")));
+    let path = PathExpr::OneOrMore(Box::new(label("knows")));
 
     let result = evaluator
-        .evaluate(&named_term("A"), &path, &var("y"), &graph)
+        .evaluate(&rq(named_ep("A"), path, var("y")), &graph)
         .expect("evaluate should succeed");
 
     let indices = reachable_indices(&result);
@@ -216,10 +221,10 @@ fn test_zero_or_one_path() {
     let graph = build_graph(&[("A", "B", "knows"), ("B", "C", "knows")]);
     let evaluator = NfaRpqEvaluator;
 
-    let path = PropertyPathExpression::ZeroOrOne(Box::new(named("knows")));
+    let path = PathExpr::ZeroOrOne(Box::new(label("knows")));
 
     let result = evaluator
-        .evaluate(&named_term("A"), &path, &var("y"), &graph)
+        .evaluate(&rq(named_ep("A"), path, var("y")), &graph)
         .expect("evaluate should succeed");
 
     let indices = reachable_indices(&result);
@@ -246,7 +251,7 @@ fn test_label_not_found() {
     let graph = build_graph(&[("A", "B", "knows")]);
     let evaluator = NfaRpqEvaluator;
 
-    let result = evaluator.evaluate(&var("x"), &named("nonexistent"), &var("y"), &graph);
+    let result = evaluator.evaluate(&rq(var("x"), label("nonexistent"), var("y")), &graph);
 
     assert!(
         matches!(result, Err(RpqError::LabelNotFound(ref l)) if l == "nonexistent"),
@@ -259,7 +264,7 @@ fn test_vertex_not_found() {
     let graph = build_graph(&[("A", "B", "knows")]);
     let evaluator = NfaRpqEvaluator;
 
-    let result = evaluator.evaluate(&named_term("Z"), &named("knows"), &var("y"), &graph);
+    let result = evaluator.evaluate(&rq(named_ep("Z"), label("knows"), var("y")), &graph);
 
     assert!(
         matches!(result, Err(RpqError::VertexNotFound(ref v)) if v == "Z"),
@@ -272,7 +277,7 @@ fn test_object_vertex_not_found() {
     let graph = build_graph(&[("A", "B", "knows")]);
     let evaluator = NfaRpqEvaluator;
 
-    let result = evaluator.evaluate(&var("x"), &named("knows"), &named_term("Z"), &graph);
+    let result = evaluator.evaluate(&rq(var("x"), label("knows"), named_ep("Z")), &graph);
 
     assert!(
         matches!(result, Err(RpqError::VertexNotFound(ref v)) if v == "Z"),
@@ -281,17 +286,13 @@ fn test_object_vertex_not_found() {
 }
 
 #[test]
-fn test_reverse_path_unsupported() {
-    let graph = build_graph(&[("A", "B", "knows")]);
-    let evaluator = NfaRpqEvaluator;
-
-    let path = PropertyPathExpression::Reverse(Box::new(named("knows")));
-    let result = evaluator.evaluate(&var("x"), &path, &var("y"), &graph);
-
-    assert!(
-        matches!(result, Err(RpqError::UnsupportedPath(_))),
-        "expected UnsupportedPath error, got: {result:?}"
-    );
+fn test_negated_property_set_rejected_by_sparql_conversion() {
+    let sparql = "BASE <http://example.org/> SELECT ?x ?y WHERE { ?x !(<knows>) ?y . }";
+    let r = pathrex::sparql::parse_rpq(sparql);
+    assert!(matches!(
+        r,
+        Err(pathrex::sparql::RpqParseError::UnsupportedPath(_))
+    ));
 }
 
 /// Graph: A --knows--> B --knows--> C --knows--> A  (cycle)
@@ -305,10 +306,10 @@ fn test_cycle_graph_star() {
     ]);
     let evaluator = NfaRpqEvaluator;
 
-    let path = PropertyPathExpression::ZeroOrMore(Box::new(named("knows")));
+    let path = PathExpr::ZeroOrMore(Box::new(label("knows")));
 
     let result = evaluator
-        .evaluate(&named_term("A"), &path, &var("y"), &graph)
+        .evaluate(&rq(named_ep("A"), path, var("y")), &graph)
         .expect("evaluate should succeed");
 
     let count = reachable_count(&result);
@@ -327,16 +328,16 @@ fn test_complex_path() {
     let evaluator = NfaRpqEvaluator;
 
     // knows / likes* / knows
-    let path = PropertyPathExpression::Sequence(
-        Box::new(PropertyPathExpression::Sequence(
-            Box::new(named("knows")),
-            Box::new(PropertyPathExpression::ZeroOrMore(Box::new(named("likes")))),
+    let path = PathExpr::Sequence(
+        Box::new(PathExpr::Sequence(
+            Box::new(label("knows")),
+            Box::new(PathExpr::ZeroOrMore(Box::new(label("likes")))),
         )),
-        Box::new(named("knows")),
+        Box::new(label("knows")),
     );
 
     let result = evaluator
-        .evaluate(&named_term("A"), &path, &var("y"), &graph)
+        .evaluate(&rq(named_ep("A"), path, var("y")), &graph)
         .expect("evaluate should succeed");
 
     let indices = reachable_indices(&result);
@@ -352,9 +353,9 @@ fn test_no_matching_path() {
     let graph = build_graph(&[("A", "B", "knows")]);
     let evaluator = NfaRpqEvaluator;
 
-    let path = PropertyPathExpression::Sequence(Box::new(named("knows")), Box::new(named("likes")));
+    let path = PathExpr::Sequence(Box::new(label("knows")), Box::new(label("likes")));
 
-    let result = evaluator.evaluate(&var("x"), &path, &var("y"), &graph);
+    let result = evaluator.evaluate(&rq(var("x"), path, var("y")), &graph);
 
     assert!(
         matches!(result, Err(RpqError::LabelNotFound(ref l)) if l == "likes"),

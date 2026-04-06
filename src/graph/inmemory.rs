@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::{collections::HashMap, io::Read};
 
-use crate::formats::mm::{load_mm_file, parse_index_map};
+use crate::formats::mm::{apply_base_iri, load_mm_file, parse_index_map};
 use crate::formats::{Csv, MatrixMarket};
 use crate::{
     graph::GraphSource,
@@ -214,14 +214,23 @@ impl<R: Read> GraphSource<InMemoryBuilder> for Csv<R> {
 
 impl GraphSource<InMemoryBuilder> for MatrixMarket {
     fn apply_to(self, mut builder: InMemoryBuilder) -> Result<InMemoryBuilder, GraphError> {
+        let base = self.base_iri.as_deref();
         let vertices_path = self.dir.join("vertices.txt");
         let (vert_by_idx, vert_by_name) = parse_index_map(&vertices_path)?;
-        let vert_by_idx  =
-            vert_by_idx.into_iter().map(|(i, n)| (i - 1, n)).collect();
-        let vert_by_name =
-            vert_by_name.into_iter().map(|(n, i)| (n, i - 1)).collect();
+        let vert_by_idx = vert_by_idx
+            .into_iter()
+            .map(|(i, n)| (i - 1, apply_base_iri(n, base)))
+            .collect();
+        let vert_by_name = vert_by_name
+            .into_iter()
+            .map(|(n, i)| (apply_base_iri(n, base), i - 1))
+            .collect();
 
         let (edge_by_idx, _) = parse_index_map(&self.dir.join("edges.txt"))?;
+        let edge_by_idx: HashMap<usize, String> = edge_by_idx
+            .into_iter()
+            .map(|(i, label)| (i, apply_base_iri(label, base)))
+            .collect();
 
         builder.set_node_map(vert_by_idx, vert_by_name);
 

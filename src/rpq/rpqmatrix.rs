@@ -3,12 +3,10 @@
 use std::ptr::null_mut;
 
 use egg::{Id, RecExpr, define_language};
-use spargebra::algebra::PropertyPathExpression;
-use spargebra::term::TermPattern;
 
-use crate::graph::{GraphDecomposition, GraphblasVector, ensure_grb_init};
+use crate::graph::{GraphDecomposition, GraphblasMatrix, ensure_grb_init};
 use crate::lagraph_sys::*;
-use crate::rpq::{RpqError, RpqEvaluator, RpqResult};
+use crate::rpq::{Endpoint, PathExpr, RpqError, RpqEvaluator, RpqQuery};
 use crate::{grb_ok, la_ok};
 
 unsafe impl Send for RPQMatrixPlan {}
@@ -22,55 +20,42 @@ define_language! {
     }
 }
 
-/// Compile a [`PropertyPathExpression`] into  [`RecExpr<RpqPlan>`].
-pub fn to_expr(path: &PropertyPathExpression) -> Result<RecExpr<RpqPlan>, RpqError> {
+/// Compile a [`PathExpr`] into [`RecExpr<RpqPlan>`].
+pub fn to_expr(path: &PathExpr) -> Result<RecExpr<RpqPlan>, RpqError> {
     let mut expr = RecExpr::default();
     to_expr_aux(path, &mut expr)?;
     Ok(expr)
 }
 
-fn to_expr_aux(
-    path: &PropertyPathExpression,
-    expr: &mut RecExpr<RpqPlan>,
-) -> Result<Id, RpqError> {
+fn to_expr_aux(path: &PathExpr, expr: &mut RecExpr<RpqPlan>) -> Result<Id, RpqError> {
     match path {
-        PropertyPathExpression::NamedNode(nn) => {
-            Ok(expr.add(RpqPlan::Label(nn.as_str().to_owned())))
-        }
+        PathExpr::Label(label) => Ok(expr.add(RpqPlan::Label(label.clone()))),
 
-        PropertyPathExpression::Sequence(lhs, rhs) => {
+        PathExpr::Sequence(lhs, rhs) => {
             let l = to_expr_aux(lhs, expr)?;
             let r = to_expr_aux(rhs, expr)?;
             Ok(expr.add(RpqPlan::Seq([l, r])))
         }
 
-        PropertyPathExpression::Alternative(lhs, rhs) => {
+        PathExpr::Alternative(lhs, rhs) => {
             let l = to_expr_aux(lhs, expr)?;
             let r = to_expr_aux(rhs, expr)?;
             Ok(expr.add(RpqPlan::Alt([l, r])))
         }
 
-        PropertyPathExpression::ZeroOrMore(inner) => {
+        PathExpr::ZeroOrMore(inner) => {
             let i = to_expr_aux(inner, expr)?;
             Ok(expr.add(RpqPlan::Star([i])))
         }
 
-        PropertyPathExpression::OneOrMore(inner) => {
+        PathExpr::OneOrMore(inner) => {
             let e = to_expr_aux(inner, expr)?;
             let s = expr.add(RpqPlan::Star([e]));
             Ok(expr.add(RpqPlan::Seq([e, s])))
         }
 
-        PropertyPathExpression::ZeroOrOne(_) => Err(RpqError::UnsupportedPath(
+        PathExpr::ZeroOrOne(_) => Err(RpqError::UnsupportedPath(
             "ZeroOrOne (?) is not supported by RPQMatrix".into(),
-        )),
-
-        PropertyPathExpression::Reverse(_) => Err(RpqError::UnsupportedPath(
-            "Reverse paths are not supported".into(),
-        )),
-
-        PropertyPathExpression::NegatedPropertySet(_) => Err(RpqError::UnsupportedPath(
-            "NegatedPropertySet paths are not supported".into(),
         )),
     }
 }
@@ -135,28 +120,39 @@ pub fn materialize<G: GraphDecomposition>(
     Ok(plans)
 }
 
+/// Output of [`RpqMatrixEvaluator`]: full path relation matrix and its nnz.
+#[derive(Debug)]
+pub struct RpqMatrixResult {
+    pub nnz: u64,
+    pub matrix: GraphblasMatrix,
+}
+
 /// RPQ evaluator backed by `LAGraph_RPQMatrix`.
 pub struct RpqMatrixEvaluator;
 
 impl RpqEvaluator for RpqMatrixEvaluator {
+    type Result = RpqMatrixResult;
+
     fn evaluate<G: GraphDecomposition>(
         &self,
-        subject: &TermPattern,
-        path: &PropertyPathExpression,
-        object: &TermPattern,
+        query: &RpqQuery,
         graph: &G,
-    ) -> Result<RpqResult, RpqError> {
-        if !matches!(object, TermPattern::Variable(_)) {
+    ) -> Result<RpqMatrixResult, RpqError> {
+        if !matches!(query.object, Endpoint::Variable(_)) {
             return Err(RpqError::UnsupportedPath(
                 "bound object term is not yet supported by RpqMatrixEvaluator".into(),
             ));
         }
 
+        if let Endpoint::Named(id) = &query.subject {
+            graph
+                .get_node_id(id)
+                .ok_or_else(|| RpqError::VertexNotFound(id.clone()))?;
+        }
+
         ensure_grb_init().map_err(|e| RpqError::GraphBlas(e.to_string()))?;
 
-        let n = graph.num_nodes() as GrB_Index;
-
-        let expr = to_expr(path)?;
+        let expr = to_expr(&query.path)?;
 
         let mut plans = materialize(&expr, graph)?;
         let root_ptr = unsafe { plans.as_mut_ptr().add(plans.len() - 1) };
@@ -165,50 +161,37 @@ impl RpqEvaluator for RpqMatrixEvaluator {
         la_ok!(LAGraph_RPQMatrix(&mut nnz, root_ptr))
             .map_err(|e| RpqError::GraphBlas(e.to_string()))?;
 
-        let res_mat = unsafe { (*root_ptr).res_mat };
-
-        let src = unsafe {
-            GraphblasVector::new_bool(n).map_err(|e| RpqError::GraphBlas(e.to_string()))?
+        let matrix = unsafe {
+            let mat = (*root_ptr).res_mat;
+            (*root_ptr).res_mat = null_mut();
+            GraphblasMatrix { inner: mat }
         };
-        match subject {
-            TermPattern::NamedNode(nn) => {
-                let id = graph
-                    .get_node_id(nn.as_str())
-                    .ok_or_else(|| RpqError::VertexNotFound(nn.as_str().to_owned()))?
-                    as GrB_Index;
-                grb_ok!(GrB_Vector_setElement_BOOL(src.inner, true, id))
-                    .map_err(|e| RpqError::GraphBlas(e.to_string()))?;
-            }
-            TermPattern::Variable(_) => {
-                for i in 0..n {
-                    grb_ok!(GrB_Vector_setElement_BOOL(src.inner, true, i))
-                        .map_err(|e| RpqError::GraphBlas(e.to_string()))?;
-                }
-            }
-            _ => {
-                return Err(RpqError::UnsupportedPath(
-                    "subject must be a variable or named node".into(),
-                ));
-            }
-        }
-
-        let result = unsafe {
-            GraphblasVector::new_bool(n).map_err(|e| RpqError::GraphBlas(e.to_string()))?
-        };
-        grb_ok!(GrB_vxm(
-            result.inner,
-            null_mut(),
-            null_mut(),
-            GrB_LOR_LAND_SEMIRING_BOOL,
-            src.inner,
-            res_mat,
-            null_mut(),
-        ))
-        .map_err(|e| RpqError::GraphBlas(e.to_string()))?;
 
         grb_ok!(LAGraph_DestroyRpqMatrixPlan(root_ptr))
             .map_err(|e| RpqError::GraphBlas(e.to_string()))?;
 
-        Ok(RpqResult { reachable: result })
+        Ok(RpqMatrixResult {
+            nnz: nnz as u64,
+            matrix,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rpq::{Endpoint, PathExpr, RpqQuery};
+    use crate::utils::build_graph;
+
+    #[test]
+    fn evaluate_single_edge_nnz() {
+        let graph = build_graph(&[("A", "B", "p")]);
+        let q = RpqQuery {
+            subject: Endpoint::Variable("x".into()),
+            path: PathExpr::Label("p".into()),
+            object: Endpoint::Variable("y".into()),
+        };
+        let result = RpqMatrixEvaluator.evaluate(&q, &graph).expect("evaluate");
+        assert_eq!(result.nnz, 1);
     }
 }

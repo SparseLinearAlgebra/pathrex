@@ -154,6 +154,35 @@ impl Drop for GraphblasVector {
 unsafe impl Send for GraphblasVector {}
 unsafe impl Sync for GraphblasVector {}
 
+#[derive(Debug)]
+pub struct GraphblasMatrix {
+    pub inner: GrB_Matrix,
+}
+
+impl GraphblasMatrix {
+    /// Duplicate an existing matrix handle.
+    ///
+    /// # Safety
+    /// Caller must ensure LAGraph/GraphBLAS has been initialised via
+    /// [`ensure_grb_init`].
+    pub unsafe fn dup(source: GrB_Matrix) -> Result<Self, GraphError> {
+        let mut m: GrB_Matrix = std::ptr::null_mut();
+        grb_ok!(GrB_Matrix_dup(&mut m, source))?;
+        Ok(Self { inner: m })
+    }
+}
+
+impl Drop for GraphblasMatrix {
+    fn drop(&mut self) {
+        if !self.inner.is_null() {
+            let _ = grb_ok!(GrB_Matrix_free(&mut self.inner));
+        }
+    }
+}
+
+unsafe impl Send for GraphblasMatrix {}
+unsafe impl Sync for GraphblasMatrix {}
+
 /// A directed, labelled edge as produced by format parsers.
 #[derive(Debug, Clone)]
 pub struct Edge {

@@ -1,8 +1,8 @@
 use pathrex::formats::csv::Csv;
-use pathrex::utils::build_graph;
 use pathrex::graph::{
     Edge, Graph, GraphBuilder, GraphDecomposition, GraphError, InMemory, InMemoryBuilder,
 };
+use pathrex::utils::build_graph;
 
 #[test]
 fn node_ids_are_unique() {

@@ -1,49 +1,50 @@
 use pathrex::graph::GraphDecomposition;
-use pathrex::lagraph_sys::{GrB_Index, GrB_Vector_extractTuples_BOOL, GrB_Vector_nvals};
-use pathrex::rpq::rpqmatrix::RpqMatrixEvaluator;
-use pathrex::rpq::{RpqError, RpqEvaluator, RpqResult};
+use pathrex::lagraph_sys::{GrB_Index, GrB_Info, GrB_Matrix_extractElement_BOOL};
+use pathrex::rpq::rpqmatrix::{RpqMatrixEvaluator, RpqMatrixResult};
+use pathrex::rpq::{Endpoint, PathExpr, RpqError, RpqEvaluator, RpqQuery};
 use pathrex::utils::build_graph;
-use spargebra::algebra::PropertyPathExpression;
-use spargebra::term::{NamedNode, TermPattern, Variable};
 
-fn named(iri: &str) -> PropertyPathExpression {
-    PropertyPathExpression::NamedNode(NamedNode::new_unchecked(iri))
+fn label(s: &str) -> PathExpr {
+    PathExpr::Label(s.to_string())
 }
 
-fn var(name: &str) -> TermPattern {
-    TermPattern::Variable(Variable::new_unchecked(name))
+fn var(name: &str) -> Endpoint {
+    Endpoint::Variable(name.to_string())
 }
 
-fn named_term(iri: &str) -> TermPattern {
-    TermPattern::NamedNode(NamedNode::new_unchecked(iri))
+fn named_ep(s: &str) -> Endpoint {
+    Endpoint::Named(s.to_string())
 }
 
-fn reachable_indices(result: &RpqResult) -> Vec<GrB_Index> {
+fn rq(subject: Endpoint, path: PathExpr, object: Endpoint) -> RpqQuery {
+    RpqQuery {
+        subject,
+        path,
+        object,
+    }
+}
+
+fn matrix_entry_set(result: &RpqMatrixResult, row: GrB_Index, col: GrB_Index) -> bool {
     unsafe {
-        let mut nvals: GrB_Index = 0;
-        GrB_Vector_nvals(&mut nvals, result.reachable.inner);
-        if nvals == 0 {
-            return Vec::new();
+        let mut x = false;
+        let info = GrB_Matrix_extractElement_BOOL(&mut x, result.matrix.inner, row, col);
+        info == GrB_Info::GrB_SUCCESS && x
+    }
+}
+
+fn row_targets<G: GraphDecomposition>(
+    result: &RpqMatrixResult,
+    graph: &G,
+    row: GrB_Index,
+) -> Vec<GrB_Index> {
+    let n = graph.num_nodes();
+    let mut out = Vec::new();
+    for j in 0..n as GrB_Index {
+        if matrix_entry_set(result, row, j) {
+            out.push(j);
         }
-        let mut indices = vec![0u64; nvals as usize];
-        let mut values = vec![false; nvals as usize];
-        GrB_Vector_extractTuples_BOOL(
-            indices.as_mut_ptr(),
-            values.as_mut_ptr(),
-            &mut nvals,
-            result.reachable.inner,
-        );
-        indices.truncate(nvals as usize);
-        indices
     }
-}
-
-fn reachable_count(result: &RpqResult) -> u64 {
-    unsafe {
-        let mut nvals: GrB_Index = 0;
-        GrB_Vector_nvals(&mut nvals, result.reachable.inner);
-        nvals
-    }
+    out
 }
 
 /// Graph: A --knows--> B --knows--> C
@@ -54,11 +55,10 @@ fn test_single_label_variable_variable() {
     let evaluator = RpqMatrixEvaluator;
 
     let result = evaluator
-        .evaluate(&var("x"), &named("knows"), &var("y"), &graph)
+        .evaluate(&rq(var("x"), label("knows"), var("y")), &graph)
         .expect("evaluate should succeed");
 
-    let count = reachable_count(&result);
-    assert_eq!(count, 2);
+    assert_eq!(result.nnz, 2);
 }
 
 /// Graph: A --knows--> B --knows--> C
@@ -69,14 +69,14 @@ fn test_single_label_named_source() {
     let evaluator = RpqMatrixEvaluator;
 
     let result = evaluator
-        .evaluate(&named_term("A"), &named("knows"), &var("y"), &graph)
+        .evaluate(&rq(named_ep("A"), label("knows"), var("y")), &graph)
         .expect("evaluate should succeed");
 
-    let indices = reachable_indices(&result);
-    let b_id = graph.get_node_id("B").expect("B should exist");
+    let a_id = graph.get_node_id("A").expect("A should exist") as GrB_Index;
+    let b_id = graph.get_node_id("B").expect("B should exist") as GrB_Index;
     assert!(
-        indices.contains(&(b_id as GrB_Index)),
-        "B (id={b_id}) should be reachable from A via 'knows', got indices: {indices:?}"
+        matrix_entry_set(&result, a_id, b_id),
+        "B should be reachable from A via 'knows'"
     );
 }
 
@@ -87,14 +87,13 @@ fn test_sequence_path() {
     let graph = build_graph(&[("A", "B", "knows"), ("B", "C", "likes")]);
     let evaluator = RpqMatrixEvaluator;
 
-    let path = PropertyPathExpression::Sequence(Box::new(named("knows")), Box::new(named("likes")));
+    let path = PathExpr::Sequence(Box::new(label("knows")), Box::new(label("likes")));
 
     let result = evaluator
-        .evaluate(&var("x"), &path, &var("y"), &graph)
+        .evaluate(&rq(var("x"), path, var("y")), &graph)
         .expect("evaluate should succeed");
 
-    let count = reachable_count(&result);
-    assert_eq!(count, 1);
+    assert_eq!(result.nnz, 1);
 }
 
 /// Graph: A --knows--> B --likes--> C
@@ -104,17 +103,17 @@ fn test_sequence_path_named_source() {
     let graph = build_graph(&[("A", "B", "knows"), ("B", "C", "likes")]);
     let evaluator = RpqMatrixEvaluator;
 
-    let path = PropertyPathExpression::Sequence(Box::new(named("knows")), Box::new(named("likes")));
+    let path = PathExpr::Sequence(Box::new(label("knows")), Box::new(label("likes")));
 
     let result = evaluator
-        .evaluate(&named_term("A"), &path, &var("y"), &graph)
+        .evaluate(&rq(named_ep("A"), path, var("y")), &graph)
         .expect("evaluate should succeed");
 
-    let indices = reachable_indices(&result);
-    let c_id = graph.get_node_id("C").expect("C should exist");
+    let a_id = graph.get_node_id("A").expect("A should exist") as GrB_Index;
+    let c_id = graph.get_node_id("C").expect("C should exist") as GrB_Index;
     assert!(
-        indices.contains(&(c_id as GrB_Index)),
-        "C (id={c_id}) should be reachable from A via knows/likes, got indices: {indices:?}"
+        matrix_entry_set(&result, a_id, c_id),
+        "C should be reachable from A via knows/likes"
     );
 }
 
@@ -125,22 +124,21 @@ fn test_alternative_path() {
     let graph = build_graph(&[("A", "B", "knows"), ("A", "C", "likes")]);
     let evaluator = RpqMatrixEvaluator;
 
-    let path =
-        PropertyPathExpression::Alternative(Box::new(named("knows")), Box::new(named("likes")));
+    let path = PathExpr::Alternative(Box::new(label("knows")), Box::new(label("likes")));
 
     let result = evaluator
-        .evaluate(&named_term("A"), &path, &var("y"), &graph)
+        .evaluate(&rq(named_ep("A"), path, var("y")), &graph)
         .expect("evaluate should succeed");
 
-    let indices = reachable_indices(&result);
-    let b_id = graph.get_node_id("B").expect("B should exist");
-    let c_id = graph.get_node_id("C").expect("C should exist");
+    let a_id = graph.get_node_id("A").expect("A should exist") as GrB_Index;
+    let b_id = graph.get_node_id("B").expect("B should exist") as GrB_Index;
+    let c_id = graph.get_node_id("C").expect("C should exist") as GrB_Index;
     assert!(
-        indices.contains(&(b_id as GrB_Index)),
+        matrix_entry_set(&result, a_id, b_id),
         "B should be reachable via knows|likes"
     );
     assert!(
-        indices.contains(&(c_id as GrB_Index)),
+        matrix_entry_set(&result, a_id, c_id),
         "C should be reachable via knows|likes"
     );
 }
@@ -152,20 +150,28 @@ fn test_zero_or_more_path() {
     let graph = build_graph(&[("A", "B", "knows"), ("B", "C", "knows")]);
     let evaluator = RpqMatrixEvaluator;
 
-    let path = PropertyPathExpression::ZeroOrMore(Box::new(named("knows")));
+    let path = PathExpr::ZeroOrMore(Box::new(label("knows")));
 
     let result = evaluator
-        .evaluate(&named_term("A"), &path, &var("y"), &graph)
+        .evaluate(&rq(named_ep("A"), path, var("y")), &graph)
         .expect("evaluate should succeed");
 
-    let indices = reachable_indices(&result);
-    let a_id = graph.get_node_id("A").expect("A should exist");
-    let b_id = graph.get_node_id("B").expect("B should exist");
-    let c_id = graph.get_node_id("C").expect("C should exist");
+    let a_id = graph.get_node_id("A").expect("A should exist") as GrB_Index;
+    let b_id = graph.get_node_id("B").expect("B should exist") as GrB_Index;
+    let c_id = graph.get_node_id("C").expect("C should exist") as GrB_Index;
 
-    assert!(indices.contains(&(a_id as GrB_Index)), "A should be reachable (zero hops)");
-    assert!(indices.contains(&(b_id as GrB_Index)), "B should be reachable (one hop)");
-    assert!(indices.contains(&(c_id as GrB_Index)), "C should be reachable (two hops)");
+    assert!(
+        matrix_entry_set(&result, a_id, a_id),
+        "A should be reachable (zero hops)"
+    );
+    assert!(
+        matrix_entry_set(&result, a_id, b_id),
+        "B should be reachable (one hop)"
+    );
+    assert!(
+        matrix_entry_set(&result, a_id, c_id),
+        "C should be reachable (two hops)"
+    );
 }
 
 /// Graph: A --knows--> B --knows--> C
@@ -175,20 +181,28 @@ fn test_one_or_more_path() {
     let graph = build_graph(&[("A", "B", "knows"), ("B", "C", "knows")]);
     let evaluator = RpqMatrixEvaluator;
 
-    let path = PropertyPathExpression::OneOrMore(Box::new(named("knows")));
+    let path = PathExpr::OneOrMore(Box::new(label("knows")));
 
     let result = evaluator
-        .evaluate(&named_term("A"), &path, &var("y"), &graph)
+        .evaluate(&rq(named_ep("A"), path, var("y")), &graph)
         .expect("evaluate should succeed");
 
-    let indices = reachable_indices(&result);
-    let a_id = graph.get_node_id("A").expect("A should exist");
-    let b_id = graph.get_node_id("B").expect("B should exist");
-    let c_id = graph.get_node_id("C").expect("C should exist");
+    let a_id = graph.get_node_id("A").expect("A should exist") as GrB_Index;
+    let b_id = graph.get_node_id("B").expect("B should exist") as GrB_Index;
+    let c_id = graph.get_node_id("C").expect("C should exist") as GrB_Index;
 
-    assert!(!indices.contains(&(a_id as GrB_Index)), "A shouldn't be reachable");
-    assert!(indices.contains(&(b_id as GrB_Index)), "B should be reachable (one hop)");
-    assert!(indices.contains(&(c_id as GrB_Index)), "C should be reachable (two hops)");
+    assert!(
+        !matrix_entry_set(&result, a_id, a_id),
+        "A shouldn't be reachable (non-zero length)"
+    );
+    assert!(
+        matrix_entry_set(&result, a_id, b_id),
+        "B should be reachable (one hop)"
+    );
+    assert!(
+        matrix_entry_set(&result, a_id, c_id),
+        "C should be reachable (two hops)"
+    );
 }
 
 #[test]
@@ -196,8 +210,8 @@ fn test_zero_or_one_unsupported() {
     let graph = build_graph(&[("A", "B", "knows")]);
     let evaluator = RpqMatrixEvaluator;
 
-    let path = PropertyPathExpression::ZeroOrOne(Box::new(named("knows")));
-    let result = evaluator.evaluate(&var("x"), &path, &var("y"), &graph);
+    let path = PathExpr::ZeroOrOne(Box::new(label("knows")));
+    let result = evaluator.evaluate(&rq(var("x"), path, var("y")), &graph);
 
     assert!(
         matches!(result, Err(RpqError::UnsupportedPath(_))),
@@ -210,7 +224,7 @@ fn test_label_not_found() {
     let graph = build_graph(&[("A", "B", "knows")]);
     let evaluator = RpqMatrixEvaluator;
 
-    let result = evaluator.evaluate(&var("x"), &named("nonexistent"), &var("y"), &graph);
+    let result = evaluator.evaluate(&rq(var("x"), label("nonexistent"), var("y")), &graph);
 
     assert!(
         matches!(result, Err(RpqError::LabelNotFound(ref l)) if l == "nonexistent"),
@@ -223,7 +237,7 @@ fn test_vertex_not_found() {
     let graph = build_graph(&[("A", "B", "knows")]);
     let evaluator = RpqMatrixEvaluator;
 
-    let result = evaluator.evaluate(&named_term("Z"), &named("knows"), &var("y"), &graph);
+    let result = evaluator.evaluate(&rq(named_ep("Z"), label("knows"), var("y")), &graph);
 
     assert!(
         matches!(result, Err(RpqError::VertexNotFound(ref v)) if v == "Z"),
@@ -236,7 +250,7 @@ fn test_bound_object_unsupported() {
     let graph = build_graph(&[("A", "B", "knows")]);
     let evaluator = RpqMatrixEvaluator;
 
-    let result = evaluator.evaluate(&var("x"), &named("knows"), &named_term("B"), &graph);
+    let result = evaluator.evaluate(&rq(var("x"), label("knows"), named_ep("B")), &graph);
 
     assert!(
         matches!(result, Err(RpqError::UnsupportedPath(_))),
@@ -245,17 +259,13 @@ fn test_bound_object_unsupported() {
 }
 
 #[test]
-fn test_reverse_path_unsupported() {
-    let graph = build_graph(&[("A", "B", "knows")]);
-    let evaluator = RpqMatrixEvaluator;
-
-    let path = PropertyPathExpression::Reverse(Box::new(named("knows")));
-    let result = evaluator.evaluate(&var("x"), &path, &var("y"), &graph);
-
-    assert!(
-        matches!(result, Err(RpqError::UnsupportedPath(_))),
-        "expected UnsupportedPath error, got: {result:?}"
-    );
+fn test_negated_property_set_rejected_by_sparql_conversion() {
+    let sparql = "BASE <http://example.org/> SELECT ?x ?y WHERE { ?x !(<knows>) ?y . }";
+    let r = pathrex::sparql::parse_rpq(sparql);
+    assert!(matches!(
+        r,
+        Err(pathrex::sparql::RpqParseError::UnsupportedPath(_))
+    ));
 }
 
 /// Graph: A --knows--> B --knows--> C --knows--> A  (cycle)
@@ -269,14 +279,19 @@ fn test_cycle_graph_star() {
     ]);
     let evaluator = RpqMatrixEvaluator;
 
-    let path = PropertyPathExpression::ZeroOrMore(Box::new(named("knows")));
+    let path = PathExpr::ZeroOrMore(Box::new(label("knows")));
 
     let result = evaluator
-        .evaluate(&named_term("A"), &path, &var("y"), &graph)
+        .evaluate(&rq(named_ep("A"), path, var("y")), &graph)
         .expect("evaluate should succeed");
 
-    let count = reachable_count(&result);
-    assert_eq!(count, 3, "all 3 nodes should be reachable in a cycle");
+    let a_id = graph.get_node_id("A").expect("A should exist") as GrB_Index;
+    let targets = row_targets(&result, &graph, a_id);
+    assert_eq!(
+        targets.len(),
+        3,
+        "all 3 nodes should be reachable from A in a cycle"
+    );
 }
 
 /// Graph: A --knows--> B --likes--> C --knows--> D
@@ -290,23 +305,24 @@ fn test_complex_path() {
     ]);
     let evaluator = RpqMatrixEvaluator;
 
-    let path = PropertyPathExpression::Sequence(
-        Box::new(PropertyPathExpression::Sequence(
-            Box::new(named("knows")),
-            Box::new(PropertyPathExpression::ZeroOrMore(Box::new(named("likes")))),
+    // knows / likes* / knows
+    let path = PathExpr::Sequence(
+        Box::new(PathExpr::Sequence(
+            Box::new(label("knows")),
+            Box::new(PathExpr::ZeroOrMore(Box::new(label("likes")))),
         )),
-        Box::new(named("knows")),
+        Box::new(label("knows")),
     );
 
     let result = evaluator
-        .evaluate(&named_term("A"), &path, &var("y"), &graph)
+        .evaluate(&rq(named_ep("A"), path, var("y")), &graph)
         .expect("evaluate should succeed");
 
-    let indices = reachable_indices(&result);
-    let d_id = graph.get_node_id("D").expect("D should exist");
+    let a_id = graph.get_node_id("A").expect("A should exist") as GrB_Index;
+    let d_id = graph.get_node_id("D").expect("D should exist") as GrB_Index;
     assert!(
-        indices.contains(&(d_id as GrB_Index)),
-        "D should be reachable via knows/likes*/knows, got indices: {indices:?}"
+        matrix_entry_set(&result, a_id, d_id),
+        "D should be reachable via knows/likes*/knows"
     );
 }
 
@@ -315,9 +331,9 @@ fn test_no_matching_path() {
     let graph = build_graph(&[("A", "B", "knows")]);
     let evaluator = RpqMatrixEvaluator;
 
-    let path = PropertyPathExpression::Sequence(Box::new(named("knows")), Box::new(named("likes")));
+    let path = PathExpr::Sequence(Box::new(label("knows")), Box::new(label("likes")));
 
-    let result = evaluator.evaluate(&var("x"), &path, &var("y"), &graph);
+    let result = evaluator.evaluate(&rq(var("x"), path, var("y")), &graph);
 
     assert!(
         matches!(result, Err(RpqError::LabelNotFound(ref l)) if l == "likes"),

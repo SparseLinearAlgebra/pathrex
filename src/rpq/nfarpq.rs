@@ -7,9 +7,7 @@ use crate::grb_ok;
 use crate::la_ok;
 use crate::lagraph_sys::*;
 use crate::lagraph_sys::{GrB_BOOL, GrB_LOR, GrB_Matrix_build_BOOL, GrB_Matrix_new, LAGraph_Kind};
-use crate::rpq::{RpqError, RpqEvaluator, RpqResult};
-use spargebra::algebra::PropertyPathExpression;
-use spargebra::term::TermPattern;
+use crate::rpq::{Endpoint, PathExpr, RpqError, RpqEvaluator, RpqQuery};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Transitions for a single edge label in the NFA.
@@ -32,7 +30,7 @@ pub struct Nfa {
 }
 
 impl Nfa {
-    pub fn from_property_path(path: &PropertyPathExpression) -> Result<Self, RpqError> {
+    pub fn from_path_expr(path: &PathExpr) -> Result<Self, RpqError> {
         let mut builder = NfaBuilder::new();
         let (start, end) = builder.build(path)?;
         builder.mark_start(start);
@@ -126,23 +124,23 @@ impl NfaBuilder {
         self.final_states.push(s);
     }
 
-    fn build(&mut self, path: &PropertyPathExpression) -> Result<(usize, usize), RpqError> {
+    fn build(&mut self, path: &PathExpr) -> Result<(usize, usize), RpqError> {
         match path {
-            PropertyPathExpression::NamedNode(nn) => {
+            PathExpr::Label(label) => {
                 let s = self.new_state();
                 let e = self.new_state();
-                self.add_label(s, e, nn.as_str().to_owned());
+                self.add_label(s, e, label.clone());
                 Ok((s, e))
             }
 
-            PropertyPathExpression::Sequence(lhs, rhs) => {
+            PathExpr::Sequence(lhs, rhs) => {
                 let (ls, le) = self.build(lhs)?;
                 let (rs, re) = self.build(rhs)?;
                 self.add_epsilon(le, rs);
                 Ok((ls, re))
             }
 
-            PropertyPathExpression::Alternative(lhs, rhs) => {
+            PathExpr::Alternative(lhs, rhs) => {
                 let s = self.new_state();
                 let e = self.new_state();
                 let (ls, le) = self.build(lhs)?;
@@ -154,7 +152,7 @@ impl NfaBuilder {
                 Ok((s, e))
             }
 
-            PropertyPathExpression::ZeroOrMore(inner) => {
+            PathExpr::ZeroOrMore(inner) => {
                 let s = self.new_state();
                 let e = self.new_state();
                 let (is, ie) = self.build(inner)?;
@@ -165,7 +163,7 @@ impl NfaBuilder {
                 Ok((s, e))
             }
 
-            PropertyPathExpression::OneOrMore(inner) => {
+            PathExpr::OneOrMore(inner) => {
                 let s = self.new_state();
                 let e = self.new_state();
                 let (is, ie) = self.build(inner)?;
@@ -175,7 +173,7 @@ impl NfaBuilder {
                 Ok((s, e))
             }
 
-            PropertyPathExpression::ZeroOrOne(inner) => {
+            PathExpr::ZeroOrOne(inner) => {
                 let s = self.new_state();
                 let e = self.new_state();
                 let (is, ie) = self.build(inner)?;
@@ -184,14 +182,6 @@ impl NfaBuilder {
                 self.add_epsilon(s, e);
                 Ok((s, e))
             }
-
-            PropertyPathExpression::Reverse(_) => Err(RpqError::UnsupportedPath(
-                "Reverse paths are not supported".into(),
-            )),
-
-            PropertyPathExpression::NegatedPropertySet(_) => Err(RpqError::UnsupportedPath(
-                "NegatedPropertySet paths are not supported".into(),
-            )),
         }
     }
 
@@ -261,22 +251,27 @@ impl NfaBuilder {
     }
 }
 
+#[derive(Debug)]
+pub struct NfaRpqResult {
+    pub reachable: GraphblasVector,
+}
+
 /// Evaluates RPQs using `LAGraph_RegularPathQuery`.
 pub struct NfaRpqEvaluator;
 
 impl RpqEvaluator for NfaRpqEvaluator {
+    type Result = NfaRpqResult;
+
     fn evaluate<G: GraphDecomposition>(
         &self,
-        subject: &TermPattern,
-        path: &PropertyPathExpression,
-        object: &TermPattern,
+        query: &RpqQuery,
         graph: &G,
-    ) -> Result<RpqResult, RpqError> {
-        let nfa = Nfa::from_property_path(path)?;
+    ) -> Result<NfaRpqResult, RpqError> {
+        let nfa = Nfa::from_path_expr(&query.path)?;
         let nfa_matrices = nfa.build_lagraph_matrices()?;
 
-        let src_id = resolve_vertex(subject, graph, true)?;
-        let _dst_id = resolve_vertex(object, graph, false)?;
+        let src_id = resolve_endpoint(&query.subject, graph)?;
+        let _dst_id = resolve_endpoint(&query.object, graph)?;
 
         let n = graph.num_nodes();
 
@@ -314,54 +309,36 @@ impl RpqEvaluator for NfaRpqEvaluator {
 
         let result_vec = GraphblasVector { inner: reachable };
 
-        Ok(RpqResult {
+        Ok(NfaRpqResult {
             reachable: result_vec,
         })
     }
 }
 
-fn resolve_vertex<G: GraphDecomposition>(
-    term: &TermPattern,
+fn resolve_endpoint<G: GraphDecomposition>(
+    term: &Endpoint,
     graph: &G,
-    is_subject: bool,
 ) -> Result<Option<usize>, RpqError> {
     match term {
-        TermPattern::Variable(_) => Ok(None),
-        TermPattern::NamedNode(nn) => {
-            let iri = nn.as_str();
-            graph
-                .get_node_id(iri)
-                .map(Some)
-                .ok_or_else(|| RpqError::VertexNotFound(iri.to_owned()))
-        }
-        other => {
-            let msg = format!("{other}");
-            if is_subject {
-                Err(RpqError::VertexNotFound(format!(
-                    "unsupported subject term: {msg}"
-                )))
-            } else {
-                Err(RpqError::VertexNotFound(format!(
-                    "unsupported object term: {msg}"
-                )))
-            }
-        }
+        Endpoint::Variable(_) => Ok(None),
+        Endpoint::Named(id) => graph
+            .get_node_id(id)
+            .map(Some)
+            .ok_or_else(|| RpqError::VertexNotFound(id.clone())),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use spargebra::algebra::PropertyPathExpression;
-    use spargebra::term::NamedNode;
 
-    fn named(iri: &str) -> PropertyPathExpression {
-        PropertyPathExpression::NamedNode(NamedNode::new_unchecked(iri))
+    fn label(s: &str) -> PathExpr {
+        PathExpr::Label(s.to_owned())
     }
 
     #[test]
     fn test_single_label() {
-        let nfa = Nfa::from_property_path(&named("knows")).unwrap();
+        let nfa = Nfa::from_path_expr(&label("knows")).unwrap();
         assert_eq!(nfa.num_states, 2);
         assert_eq!(nfa.start_states.len(), 1);
         assert_eq!(nfa.final_states.len(), 1);
@@ -372,8 +349,8 @@ mod tests {
 
     #[test]
     fn test_sequence() {
-        let path = PropertyPathExpression::Sequence(Box::new(named("a")), Box::new(named("b")));
-        let nfa = Nfa::from_property_path(&path).unwrap();
+        let path = PathExpr::Sequence(Box::new(label("a")), Box::new(label("b")));
+        let nfa = Nfa::from_path_expr(&path).unwrap();
         let labels: Vec<&str> = nfa.transitions.iter().map(|t| t.label.as_str()).collect();
         assert!(labels.contains(&"a"));
         assert!(labels.contains(&"b"));
@@ -381,8 +358,8 @@ mod tests {
 
     #[test]
     fn test_alternative() {
-        let path = PropertyPathExpression::Alternative(Box::new(named("a")), Box::new(named("b")));
-        let nfa = Nfa::from_property_path(&path).unwrap();
+        let path = PathExpr::Alternative(Box::new(label("a")), Box::new(label("b")));
+        let nfa = Nfa::from_path_expr(&path).unwrap();
         let labels: Vec<&str> = nfa.transitions.iter().map(|t| t.label.as_str()).collect();
         assert!(labels.contains(&"a"));
         assert!(labels.contains(&"b"));
@@ -390,20 +367,11 @@ mod tests {
 
     #[test]
     fn test_zero_or_more() {
-        let path = PropertyPathExpression::ZeroOrMore(Box::new(named("knows")));
-        let nfa = Nfa::from_property_path(&path).unwrap();
+        let path = PathExpr::ZeroOrMore(Box::new(label("knows")));
+        let nfa = Nfa::from_path_expr(&path).unwrap();
         // Start state should also be a final state (zero matches).
         let start_set: HashSet<GrB_Index> = nfa.start_states.iter().copied().collect();
         let final_set: HashSet<GrB_Index> = nfa.final_states.iter().copied().collect();
         assert!(!start_set.is_disjoint(&final_set));
-    }
-
-    #[test]
-    fn test_reverse_unsupported() {
-        let path = PropertyPathExpression::Reverse(Box::new(named("knows")));
-        assert!(matches!(
-            Nfa::from_property_path(&path),
-            Err(RpqError::UnsupportedPath(_))
-        ));
     }
 }

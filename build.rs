@@ -66,6 +66,8 @@ fn regenerate_bindings() {
         .allowlist_function("GrB_Matrix_new")
         .allowlist_function("GrB_Matrix_nvals")
         .allowlist_function("GrB_Matrix_free")
+        .allowlist_function("GrB_Matrix_dup")
+        .allowlist_function("GrB_Matrix_extractElement_BOOL")
         .allowlist_function("GrB_Matrix_build_BOOL")
         .allowlist_function("GrB_Vector_new")
         .allowlist_function("GrB_Vector_free")

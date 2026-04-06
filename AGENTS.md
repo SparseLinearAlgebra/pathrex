@@ -25,10 +25,11 @@ pathrex/
 │   │   │                       #   Backend, Graph<B>), error types, RAII wrappers, GrB init
 │   │   └── inmemory.rs         # InMemory marker, InMemoryBuilder, InMemoryGraph
 │   ├── rpq/
-│   │   ├── mod.rs              # RPQ evaluation trait (RpqEvaluator), RpqResult, RpqError
-│   │   └── nfarpq.rs           # NFA-based RPQ evaluator using LAGraph_RegularPathQuery
+│   │   ├── mod.rs              # RpqEvaluator (assoc. Result), RpqQuery, Endpoint, PathExpr, RpqError
+│   │   ├── nfarpq.rs           # NfaRpqEvaluator (LAGraph_RegularPathQuery)
+│   │   └── rpqmatrix.rs        # Matrix-plan RPQ evaluator
 │   ├── sparql/
-│   │   └── mod.rs              # SPARQL parsing (spargebra), PathTriple extraction, parse_rpq
+│   │   └── mod.rs              # parse_rpq / extract_rpq → RpqQuery (spargebra)
 │   └── formats/
 │       ├── mod.rs              # FormatError enum, re-exports
 │       ├── csv.rs              # Csv<R> — CSV → Edge iterator (CsvConfig, ColumnSpec)
@@ -36,7 +37,8 @@ pathrex/
 ├── tests/
 │   ├── inmemory_tests.rs       # Integration tests for InMemoryBuilder / InMemoryGraph
 │   ├── mm_tests.rs             # Integration tests for MatrixMarket format
-│   └── nfarpq_tests.rs         # Integration tests for NfaRpqEvaluator
+│   ├── nfarpq_tests.rs         # Integration tests for NfaRpqEvaluator
+│   └── rpqmatrix_tests.rs      # Integration tests for matrix-plan RPQ evaluator
 ├── deps/
 │   └── LAGraph/                # Git submodule (SparseLinearAlgebra/LAGraph)
 └── .github/workflows/ci.yml   # CI: build GraphBLAS + LAGraph, cargo build & test
@@ -222,11 +224,16 @@ Name-based lookup requires `has_header: true`.
 
 #### MatrixMarket directory format
 
-[`MatrixMarket`](src/formats/mm.rs:159) loads an edge-labeled graph from a directory with:
+[`MatrixMarket`](src/formats/mm.rs) loads an edge-labeled graph from a directory with:
 
 - `vertices.txt` — one line per node: `<node_name> <1-based-index>` on disk; [`get_node_id`](src/graph/mod.rs:200) returns the matching **0-based** matrix index
 - `edges.txt` — one line per label: `<label_name> <1-based-index>` (selects `n.txt`)
 - `<n>.txt` — MatrixMarket adjacency matrix for label with index `n`
+
+Names in mapping files may be written with SPARQL-style angle brackets (e.g. `<Article1>`).
+[`parse_index_map`](src/formats/mm.rs) strips a single pair of surrounding `<`/`>` so
+dictionary keys match short labels (`Article1`), aligning with IRIs after
+[`RpqQuery::strip_base`](src/rpq/mod.rs) on SPARQL-derived queries.
 
 The loader uses [`LAGraph_MMRead`](src/lagraph_sys.rs) to parse each `.txt` file into a
 `GrB_Matrix`, then wraps it in an `LAGraph_Graph`. Vertex indices from `vertices.txt` are
@@ -236,45 +243,44 @@ Helper functions:
 
 - [`load_mm_file(path)`](src/formats/mm.rs:39) — reads a single MatrixMarket file into a
   `GrB_Matrix`.
-- [`parse_index_map(path)`](src/formats/mm.rs:81) — parses `<name> <index>` lines; indices must be **>= 1** and **unique** within the file.
+- [`parse_index_map(path)`](src/formats/mm.rs) — parses `<name> <index>` lines; indices must be **>= 1** and **unique** within the file.
 
 `MatrixMarket` implements `GraphSource<InMemoryBuilder>` in [`src/graph/inmemory.rs`](src/graph/inmemory.rs) (see the `impl` at line 215): `vertices.txt` maps are converted from 1-based file indices to 0-based matrix ids before [`set_node_map`](src/graph/inmemory.rs:67); `edges.txt` indices are unchanged for `n.txt` lookup.
 
 ### SPARQL parsing (`src/sparql/mod.rs`)
 
 The [`sparql`](src/sparql/mod.rs) module uses the [`spargebra`](https://crates.io/crates/spargebra)
-crate to parse SPARQL 1.1 query strings and extract the single property-path
-triple pattern that pathrex's RPQ evaluators operate on.
+crate to parse SPARQL 1.1 query strings and build a pathrex-native [`RpqQuery`](src/rpq/mod.rs)
+for RPQ evaluators.
 
 **Supported query form:** `SELECT` queries with exactly one triple or property
-path pattern in the `WHERE` clause, e.g.:
+path pattern in the `WHERE` clause. Relative IRIs such as `<knows>` require a
+`BASE` declaration (or `PREFIX` / full IRIs). Example:
 
 ```sparql
+BASE <http://example.org/>
 SELECT ?x ?y WHERE { ?x <knows>/<likes>* ?y . }
 ```
 
 Key public items:
 
-- [`parse_query(sparql)`](src/sparql/mod.rs:45) — parses a SPARQL string into a
-  [`spargebra::Query`].
-- [`extract_path(query)`](src/sparql/mod.rs:67) — validates a parsed `Query` is a
-  `SELECT` with a single path pattern and returns a [`PathTriple`](src/sparql/mod.rs:56).
-- [`parse_rpq(sparql)`](src/sparql/mod.rs:190) — convenience function combining
-  `parse_query` + `extract_path` in one call.
-- [`PathTriple`](src/sparql/mod.rs:56) — holds the extracted `subject`
-  ([`TermPattern`]), `path` ([`PropertyPathExpression`]), and `object`
-  ([`TermPattern`]).
-- [`ExtractError`](src/sparql/mod.rs:25) — error enum for extraction failures
+- [`parse_rpq(sparql)`](src/sparql/mod.rs) — parses a SPARQL string with
+  `SparqlParser` and returns an [`RpqQuery`](src/rpq/mod.rs).
+- [`extract_rpq(query)`](src/sparql/mod.rs) — validates a parsed [`spargebra::Query`] is a
+  `SELECT` with a single path pattern and returns an [`RpqQuery`](src/rpq/mod.rs).
+  Use this when you construct a custom [`SparqlParser`](https://docs.rs/spargebra) (e.g. with
+  prefix declarations) and call `parse_query` yourself.
+- [`ExtractError`](src/sparql/mod.rs) — error enum for extraction failures
   (`NotSelect`, `NotSinglePath`, `UnsupportedSubject`, `UnsupportedObject`,
   `VariablePredicate`).
-- [`RpqParseError`](src/sparql/mod.rs:198) — combined error for [`parse_rpq`]
+- [`RpqParseError`](src/sparql/mod.rs) — combined error for [`parse_rpq`] / [`extract_rpq`],
   wrapping both `spargebra::SparqlSyntaxError` and [`ExtractError`].
-- [`DEFAULT_BASE_IRI`](src/sparql/mod.rs:38) — `"http://example.org/"`, the
-  default base IRI constant.
 
-The module also handles spargebra's desugaring of sequence paths
-(`?x <a>/<b>/<c> ?y`) from a chain of BGP triples back into a single
-[`PropertyPathExpression::Sequence`].
+Call [`RpqQuery::strip_base`](src/rpq/mod.rs) when graph edge labels are short names
+and the parsed query contains full IRIs sharing a common prefix.
+
+The module handles spargebra's desugaring of sequence paths (`?x <a>/<b>/<c> ?y`)
+from a chain of BGP triples back into a single path expression.
 
 ### RPQ evaluation (`src/rpq/`)
 
@@ -283,35 +289,54 @@ Regular Path Queries (RPQs) over edge-labeled graphs using GraphBLAS/LAGraph.
 
 Key public items:
 
-- [`RpqEvaluator`](src/rpq/mod.rs:47) — trait with a single method
-  [`evaluate(subject, path, object, graph)`](src/rpq/mod.rs:48) that takes
-  SPARQL [`TermPattern`] endpoints, a [`PropertyPathExpression`] path, and a
-  [`GraphDecomposition`], returning an [`RpqResult`](src/rpq/mod.rs:42).
-- [`RpqResult`](src/rpq/mod.rs:42) — wraps a [`GraphblasVector`] of reachable
-  vertices.
-- [`RpqError`](src/rpq/mod.rs:21) — error enum covering parse errors, extraction
-  errors, unsupported paths, missing labels/vertices, and GraphBLAS failures.
+- [`Endpoint`](src/rpq/mod.rs) — `Variable(String)` or `Named(String)` (IRI string).
+- [`PathExpr`](src/rpq/mod.rs) — `Label`, `Sequence`, `Alternative`, `ZeroOrMore`,
+  `OneOrMore`, `ZeroOrOne`.
+- [`RpqQuery`](src/rpq/mod.rs) — `{ subject, path, object }` using the types above;
+  [`strip_base(&mut self, base)`](src/rpq/mod.rs) removes a shared IRI prefix from
+  named endpoints and labels.
+- [`RpqEvaluator`](src/rpq/mod.rs) — trait with associated type `Result` and
+  [`evaluate(query, graph)`](src/rpq/mod.rs) taking `&RpqQuery` and
+  [`GraphDecomposition`], returning `Result<Self::Result, RpqError>`.
+  Each concrete evaluator exposes its own output type (see below).
+- [`RpqError`](src/rpq/mod.rs) — parse/extraction errors, unsupported paths,
+  missing labels/vertices, and GraphBLAS failures.
 
 #### `NfaRpqEvaluator` (`src/rpq/nfarpq.rs`)
 
-[`NfaRpqEvaluator`](src/rpq/nfarpq.rs:265) implements [`RpqEvaluator`] by:
+[`NfaRpqEvaluator`](src/rpq/nfarpq.rs) implements [`RpqEvaluator`] by:
 
-1. Converting a [`PropertyPathExpression`] into an [`Nfa`](src/rpq/nfarpq.rs:27)
-   via Thompson's construction ([`Nfa::from_property_path()`](src/rpq/nfarpq.rs:35)).
-2. Eliminating ε-transitions via epsilon closure
-   ([`NfaBuilder::epsilon_closure()`](src/rpq/nfarpq.rs:198)).
+1. Converting a [`PathExpr`] into an [`Nfa`](src/rpq/nfarpq.rs) via Thompson's
+   construction ([`Nfa::from_path_expr()`](src/rpq/nfarpq.rs)).
+2. Eliminating ε-transitions via epsilon closure ([`NfaBuilder::epsilon_closure()`](src/rpq/nfarpq.rs)).
 3. Building one `LAGraph_Graph` per NFA label transition
-   ([`Nfa::build_lagraph_matrices()`](src/rpq/nfarpq.rs:43)).
+   ([`Nfa::build_lagraph_matrices()`](src/rpq/nfarpq.rs)).
 4. Calling [`LAGraph_RegularPathQuery`] with the NFA matrices, data-graph
    matrices, start/final states, and source vertices.
 
-Supported path operators: `NamedNode`, `Sequence`, `Alternative`,
-`ZeroOrMore`, `OneOrMore`, `ZeroOrOne`. `Reverse` and `NegatedPropertySet`
-return [`RpqError::UnsupportedPath`].
+`type Result = NfaRpqResult` ([`GraphblasVector`] of reachable targets).
 
-Subject/object resolution: a [`TermPattern::Variable`] means "all vertices";
-a [`TermPattern::NamedNode`] resolves to a single vertex via
+Supported path operators match [`PathExpr`] variants above. `Reverse` and
+`NegatedPropertySet` from SPARQL map to [`RpqError::UnsupportedPath`] when they
+appear in extracted paths.
+
+Subject/object resolution: [`Endpoint::Variable`] means "all vertices";
+[`Endpoint::Named`] resolves to a single vertex via
 [`GraphDecomposition::get_node_id()`](src/graph/mod.rs:200).
+
+[`NfaRpqResult`](src/rpq/nfarpq.rs) wraps a [`GraphblasVector`] of reachable **target**
+vertices. When the subject is a variable, every vertex is used as a source and
+`LAGraph_RegularPathQuery` returns the union of targets — individual `(source, target)`
+pairs are not preserved.
+
+#### `RpqMatrixEvaluator` (`src/rpq/rpqmatrix.rs`)
+
+[`RpqMatrixEvaluator`](src/rpq/rpqmatrix.rs) compiles [`PathExpr`] into a Boolean matrix plan
+over label adjacency matrices and runs [`LAGraph_RPQMatrix`]. It returns
+[`RpqMatrixResult`](src/rpq/rpqmatrix.rs): the path-relation `nnz` plus a
+[`GraphblasMatrix`] duplicate of the result matrix (full reachability relation for the path).
+Subject/object do not filter the matrix; a named subject is only validated to exist.
+Bound objects are not supported yet ([`RpqError::UnsupportedPath`]).
 
 ### FFI layer
 
@@ -323,6 +348,7 @@ LAGraph. Safe Rust wrappers live in [`graph::mod`](src/graph/mod.rs):
   [`LagraphGraph::from_coo()`](src/graph/mod.rs:85) to build directly from COO arrays.
 - [`GraphblasVector`](src/graph/mod.rs:128) — RAII wrapper around `GrB_Vector`
   (derives `Debug`).
+- [`GraphblasMatrix`](src/graph/mod.rs) — RAII wrapper around `GrB_Matrix` (`dup` + `free` on drop).
 - [`ensure_grb_init()`](src/graph/mod.rs:39) — one-time `LAGraph_Init` via `std::sync::Once`.
 
 ### Macros & helpers (`src/utils.rs`)
@@ -350,13 +376,14 @@ A convenience function is also provided:
 - `FormatError` converts into `GraphError` via `#[from] FormatError` on the
   `GraphError::Format` variant.
 - Unsafe FFI calls are confined to `lagraph_sys`, `graph/mod.rs`,
-  `graph/inmemory.rs`, and `rpq/nfarpq.rs`. All raw pointers are wrapped in
+  `graph/inmemory.rs`, `rpq/nfarpq.rs`, and `rpq/rpqmatrix.rs`. All raw pointers are wrapped in
   RAII types that free resources on drop.
-- `unsafe impl Send + Sync` is provided for `LagraphGraph` and
-  `GraphblasVector` because GraphBLAS handles are thread-safe after init.
+- `unsafe impl Send + Sync` is provided for `LagraphGraph`,
+  `GraphblasVector`, and `GraphblasMatrix` because GraphBLAS handles are thread-safe after init.
 - Unit tests live in `#[cfg(test)] mod tests` blocks inside each module.
   Integration tests that need GraphBLAS live in [`tests/inmemory_tests.rs`](tests/inmemory_tests.rs),
-  [`tests/mm_tests.rs`](tests/mm_tests.rs), and [`tests/nfarpq_tests.rs`](tests/nfarpq_tests.rs).
+  [`tests/mm_tests.rs`](tests/mm_tests.rs), [`tests/nfarpq_tests.rs`](tests/nfarpq_tests.rs),
+  and [`tests/rpqmatrix_tests.rs`](tests/rpqmatrix_tests.rs).
 
 ## Testing
 
@@ -380,8 +407,9 @@ Tests in `src/rpq/nfarpq.rs` (NFA construction unit tests) are pure Rust and nee
 native dependencies.
 
 Tests in `src/graph/inmemory.rs`, [`tests/inmemory_tests.rs`](tests/inmemory_tests.rs),
-[`tests/mm_tests.rs`](tests/mm_tests.rs), and [`tests/nfarpq_tests.rs`](tests/nfarpq_tests.rs)
-call real GraphBLAS/LAGraph and require the native libraries to be present.
+[`tests/mm_tests.rs`](tests/mm_tests.rs), [`tests/nfarpq_tests.rs`](tests/nfarpq_tests.rs),
+and [`tests/rpqmatrix_tests.rs`](tests/rpqmatrix_tests.rs) call real GraphBLAS/LAGraph and
+require the native libraries to be present.
 
 ## CI
 

@@ -26,10 +26,10 @@ fn test_mm_graph_node_mapping() {
     let graph = &INMEMORY_GRAPH;
 
     let test_nodes = vec![
-        ("<Article1>", 0),
-        ("<1940>", 1),
-        ("<Adamanta_Schlitt>", 2),
-        ("<Paul_Erdoes>", 3),
+        ("Article1", 0),
+        ("1940", 1),
+        ("Adamanta_Schlitt", 2),
+        ("Paul_Erdoes", 3),
     ];
 
     for (name, expected_id) in test_nodes {
@@ -48,15 +48,15 @@ fn test_mm_graph_edge_labels() {
     let graph = &INMEMORY_GRAPH;
 
     let expected_labels = vec![
-        "<journal>",
-        "<creator>",
-        "<references>",
-        "<cite>",
-        "<editor>",
-        "<coauthor>",
-        "<partOf>",
-        "<record>",
-        "<predecessor>",
+        "journal",
+        "creator",
+        "references",
+        "cite",
+        "editor",
+        "coauthor",
+        "partOf",
+        "record",
+        "predecessor",
     ];
 
     for label in expected_labels {
@@ -69,7 +69,7 @@ fn test_mm_graph_edge_labels() {
 fn test_mm_graph_nonexistent_label() {
     let graph = &INMEMORY_GRAPH;
 
-    let result = graph.get_graph("<nonexistent_label>");
+    let result = graph.get_graph("nonexistent_label");
     assert!(result.is_err());
 }
 
@@ -77,7 +77,7 @@ fn test_mm_graph_nonexistent_label() {
 fn test_mm_graph_nonexistent_node() {
     let graph = &INMEMORY_GRAPH;
 
-    assert!(graph.get_node_id("<NonexistentNode>").is_none());
+    assert!(graph.get_node_id("NonexistentNode").is_none());
 
     assert!(graph.get_node_name(999999).is_none());
 }
@@ -87,15 +87,15 @@ fn test_mm_graph_specific_nodes_exist() {
     let graph = &INMEMORY_GRAPH;
 
     let nodes_to_check = vec![
-        "<Article1>",
-        "<Article20>",
-        "<Article100>",
-        "<Paul_Erdoes>",
-        "<1940>",
-        "<1950>",
-        "<1960>",
-        "<Inproceeding1>",
-        "<Incollection1>",
+        "Article1",
+        "Article20",
+        "Article100",
+        "Paul_Erdoes",
+        "1940",
+        "1950",
+        "1960",
+        "Inproceeding1",
+        "Incollection1",
     ];
 
     for node in nodes_to_check {
@@ -108,15 +108,15 @@ fn test_mm_graph_matrix_dimensions() {
     let graph = &INMEMORY_GRAPH;
 
     let expected_labels = vec![
-        "<journal>",
-        "<creator>",
-        "<references>",
-        "<cite>",
-        "<editor>",
-        "<coauthor>",
-        "<partOf>",
-        "<record>",
-        "<predecessor>",
+        "journal",
+        "creator",
+        "references",
+        "cite",
+        "editor",
+        "coauthor",
+        "partOf",
+        "record",
+        "predecessor",
     ];
 
     for label in expected_labels {
@@ -153,15 +153,15 @@ fn test_mm_graph_edge_label_mapping() {
     // etc.
 
     let label_to_file = vec![
-        ("<journal>", "1.txt"),
-        ("<creator>", "2.txt"),
-        ("<references>", "3.txt"),
-        ("<cite>", "4.txt"),
-        ("<editor>", "5.txt"),
-        ("<coauthor>", "6.txt"),
-        ("<partOf>", "7.txt"),
-        ("<record>", "8.txt"),
-        ("<predecessor>", "9.txt"),
+        ("journal", "1.txt"),
+        ("creator", "2.txt"),
+        ("references", "3.txt"),
+        ("cite", "4.txt"),
+        ("editor", "5.txt"),
+        ("coauthor", "6.txt"),
+        ("partOf", "7.txt"),
+        ("record", "8.txt"),
+        ("predecessor", "9.txt"),
     ];
 
     for (label, _file) in label_to_file {
@@ -188,6 +188,22 @@ fn test_mm_graph_handles_large_indices() {
         "Should be able to retrieve node at last matrix index {}",
         high_index
     );
+}
+
+#[test]
+fn test_mm_graph_with_base_iri() {
+    let mm = MatrixMarket::from_dir(GRAPH_DIR).with_base_iri("http://example.org/");
+    let graph = Graph::<InMemory>::try_from(mm).expect("Failed to load graph");
+
+    let id = graph
+        .get_node_id("http://example.org/Article1")
+        .expect("node should exist under full IRI");
+    assert_eq!(
+        graph.get_node_name(id).as_deref(),
+        Some("http://example.org/Article1")
+    );
+
+    assert!(graph.get_graph("http://example.org/journal").is_ok());
 }
 
 #[test]
