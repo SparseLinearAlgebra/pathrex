@@ -11,9 +11,7 @@ impl<E: std::error::Error> CountOutput<E> {
 }
 
 impl<E: std::error::Error> GraphDecomposition for CountOutput<E> {
-    type Error = E;
-
-    fn get_graph(&self, _label: &str) -> Result<Arc<LagraphGraph>, Self::Error> {
+    fn get_graph(&self, _label: &str) -> Result<Arc<LagraphGraph>, GraphError> {
         unimplemented!("CountOutput is a test stub")
     }
 
@@ -179,4 +177,24 @@ macro_rules! la_ok {
             Err($crate::graph::GraphError::LAGraph(info, msg_str))
         }
     }};
+}
+
+pub fn build_graph(edges: &[(&str, &str, &str)]) -> <InMemory as Backend>::Graph {
+    let builder = InMemoryBuilder::new();
+    let edges = edges
+        .iter()
+        .cloned()
+        .map(|(s, t, l)| {
+            Ok(Edge {
+                source: s.to_string(),
+                label: l.to_string(),
+                target: t.to_string(),
+            })
+        })
+        .collect::<Vec<Result<Edge, GraphError>>>();
+    builder
+        .with_stream(edges.into_iter())
+        .expect("Should insert edges stream")
+        .build()
+        .expect("build must succeed")
 }

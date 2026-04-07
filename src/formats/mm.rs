@@ -75,6 +75,23 @@ pub fn load_mm_file(path: impl AsRef<Path>) -> Result<GrB_Matrix, FormatError> {
     }
 }
 
+// Trims first "<" and last ">".
+fn normalize_map_name(name: &str) -> String {
+    let name = name.trim();
+    if name.len() >= 2 && name.starts_with('<') && name.ends_with('>') {
+        name[1..name.len() - 1].to_owned()
+    } else {
+        name.to_owned()
+    }
+}
+
+pub(crate) fn apply_base_iri(name: String, base: Option<&str>) -> String {
+    match base {
+        Some(b) if !b.is_empty() => format!("{b}{name}"),
+        _ => name,
+    }
+}
+
 /// Parse a `<name> <index>` mapping file.
 ///
 /// Throws error on non-positive or duplicate indicies
@@ -111,10 +128,7 @@ pub(crate) fn parse_index_map(
             .map_err(|_| FormatError::InvalidFormat {
                 file: file_name.clone(),
                 line: line_no + 1,
-                reason: format!(
-                    "index '{}' is not a valid positive integer",
-                    idx_str.trim()
-                ),
+                reason: format!("index '{}' is not a valid positive integer", idx_str.trim()),
             })?;
 
         if idx == 0 {
@@ -125,7 +139,7 @@ pub(crate) fn parse_index_map(
             });
         }
 
-        let name = name.trim().to_owned();
+        let name = normalize_map_name(name);
         if by_idx.insert(idx, name.clone()).is_some() {
             return Err(FormatError::InvalidFormat {
                 file: file_name.clone(),
@@ -158,12 +172,21 @@ pub(crate) fn parse_index_map(
 /// ```
 pub struct MatrixMarket {
     pub(crate) dir: PathBuf,
+    pub(crate) base_iri: Option<String>,
 }
 
 impl MatrixMarket {
     /// Create a `MatrixMarket` source that will load from `dir`.
     pub fn from_dir(dir: impl Into<PathBuf>) -> Self {
-        Self { dir: dir.into() }
+        Self {
+            dir: dir.into(),
+            base_iri: None,
+        }
+    }
+
+    pub fn with_base_iri(mut self, base: impl Into<String>) -> Self {
+        self.base_iri = Some(base.into());
+        self
     }
 
     pub(crate) fn mm_path(&self, idx: usize) -> PathBuf {
@@ -191,11 +214,20 @@ mod tests {
             "<Article1> 1\n<Paul_Erdoes> 2\n<1940> 3\n",
         );
         let (by_idx, by_name) = parse_index_map(&tmp.path().join("vertices.txt")).unwrap();
-        assert_eq!(by_idx[&1], "<Article1>");
-        assert_eq!(by_idx[&2], "<Paul_Erdoes>");
-        assert_eq!(by_idx[&3], "<1940>");
-        assert_eq!(by_name["<Article1>"], 1);
-        assert_eq!(by_name["<Paul_Erdoes>"], 2);
+        assert_eq!(by_idx[&1], "Article1");
+        assert_eq!(by_idx[&2], "Paul_Erdoes");
+        assert_eq!(by_idx[&3], "1940");
+        assert_eq!(by_name["Article1"], 1);
+        assert_eq!(by_name["Paul_Erdoes"], 2);
+    }
+
+    #[test]
+    fn test_parse_index_map_preserves_unbracketed_names() {
+        let tmp = TempDir::new().unwrap();
+        write_file(tmp.path(), "v.txt", "plain_name 1\n");
+        let (by_idx, by_name) = parse_index_map(&tmp.path().join("v.txt")).unwrap();
+        assert_eq!(by_idx[&1], "plain_name");
+        assert_eq!(by_name["plain_name"], 1);
     }
 
     #[test]
@@ -220,8 +252,8 @@ mod tests {
         write_file(tmp.path(), "edges.txt", "\n<journal> 1\n\n<creator> 2\n");
         let (by_idx, _) = parse_index_map(&tmp.path().join("edges.txt")).unwrap();
         assert_eq!(by_idx.len(), 2);
-        assert_eq!(by_idx[&1], "<journal>");
-        assert_eq!(by_idx[&2], "<creator>");
+        assert_eq!(by_idx[&1], "journal");
+        assert_eq!(by_idx[&2], "creator");
     }
 
     #[test]
@@ -258,6 +290,24 @@ mod tests {
     fn test_from_dir_stores_path() {
         let src = MatrixMarket::from_dir("/some/path");
         assert_eq!(src.dir, PathBuf::from("/some/path"));
+        assert!(src.base_iri.is_none());
+    }
+
+    #[test]
+    fn test_with_base_iri() {
+        let m = MatrixMarket::from_dir("/x").with_base_iri("http://example.org/");
+        assert_eq!(m.dir, PathBuf::from("/x"));
+        assert_eq!(m.base_iri.as_deref(), Some("http://example.org/"));
+    }
+
+    #[test]
+    fn test_apply_base_iri() {
+        assert_eq!(apply_base_iri("foo".into(), None), "foo");
+        assert_eq!(
+            apply_base_iri("Article1".into(), Some("http://example.org/")),
+            "http://example.org/Article1"
+        );
+        assert_eq!(apply_base_iri("foo".into(), Some("")), "foo");
     }
 
     #[test]

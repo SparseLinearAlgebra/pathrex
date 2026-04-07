@@ -25,7 +25,7 @@ pathrex/
 │   │   │                       #   Backend, Graph<B>), error types, RAII wrappers, GrB init
 │   │   └── inmemory.rs         # InMemory marker, InMemoryBuilder, InMemoryGraph
 │   ├── sparql/
-│   │   └── mod.rs              # SPARQL parsing (spargebra), PathTriple extraction, parse_rpq
+│   │   └── mod.rs              # parse_rpq / extract_rpq → RpqQuery (spargebra)
 │   └── formats/
 │       ├── mod.rs              # FormatError enum, re-exports
 │       ├── csv.rs              # Csv<R> — CSV → Edge iterator (CsvConfig, ColumnSpec)
@@ -218,11 +218,16 @@ Name-based lookup requires `has_header: true`.
 
 #### MatrixMarket directory format
 
-[`MatrixMarket`](src/formats/mm.rs:159) loads an edge-labeled graph from a directory with:
+[`MatrixMarket`](src/formats/mm.rs) loads an edge-labeled graph from a directory with:
 
 - `vertices.txt` — one line per node: `<node_name> <1-based-index>` on disk; [`get_node_id`](src/graph/mod.rs:199) returns the matching **0-based** matrix index
 - `edges.txt` — one line per label: `<label_name> <1-based-index>` (selects `n.txt`)
 - `<n>.txt` — MatrixMarket adjacency matrix for label with index `n`
+
+Names in mapping files may be written with SPARQL-style angle brackets (e.g. `<Article1>`).
+[`parse_index_map`](src/formats/mm.rs) strips a single pair of surrounding `<`/`>` so
+dictionary keys match short labels (`Article1`), aligning with IRIs after
+[`RpqQuery::strip_base`](src/rpq/mod.rs) on SPARQL-derived queries.
 
 The loader uses [`LAGraph_MMRead`](src/lagraph_sys.rs) to parse each `.txt` file into a
 `GrB_Matrix`, then wraps it in an `LAGraph_Graph`. Vertex indices from `vertices.txt` are
@@ -232,45 +237,42 @@ Helper functions:
 
 - [`load_mm_file(path)`](src/formats/mm.rs:39) — reads a single MatrixMarket file into a
   `GrB_Matrix`.
-- [`parse_index_map(path)`](src/formats/mm.rs:81) — parses `<name> <index>` lines; indices must be **>= 1** and **unique** within the file.
+- [`parse_index_map(path)`](src/formats/mm.rs) — parses `<name> <index>` lines; indices must be **>= 1** and **unique** within the file.
 
 `MatrixMarket` implements `GraphSource<InMemoryBuilder>` in [`src/graph/inmemory.rs`](src/graph/inmemory.rs) (see the `impl` at line 215): `vertices.txt` maps are converted from 1-based file indices to 0-based matrix ids before [`set_node_map`](src/graph/inmemory.rs:67); `edges.txt` indices are unchanged for `n.txt` lookup.
 
 ### SPARQL parsing (`src/sparql/mod.rs`)
 
 The [`sparql`](src/sparql/mod.rs) module uses the [`spargebra`](https://crates.io/crates/spargebra)
-crate to parse SPARQL 1.1 query strings and extract the single property-path
-triple pattern that pathrex's RPQ evaluators operate on.
+crate to parse SPARQL 1.1 query strings and build a pathrex-native [`RpqQuery`](src/rpq/mod.rs)
+for RPQ evaluators.
 
 **Supported query form:** `SELECT` queries with exactly one triple or property
-path pattern in the `WHERE` clause, e.g.:
+path pattern in the `WHERE` clause. Relative IRIs such as `<knows>` require a
+`BASE` declaration (or `PREFIX` / full IRIs). Example:
 
 ```sparql
+BASE <http://example.org/>
 SELECT ?x ?y WHERE { ?x <knows>/<likes>* ?y . }
 ```
 
 Key public items:
 
-- [`parse_query(sparql)`](src/sparql/mod.rs:45) — parses a SPARQL string into a
-  [`spargebra::Query`].
-- [`extract_path(query)`](src/sparql/mod.rs:67) — validates a parsed `Query` is a
-  `SELECT` with a single path pattern and returns a [`PathTriple`](src/sparql/mod.rs:56).
-- [`parse_rpq(sparql)`](src/sparql/mod.rs:190) — convenience function combining
-  `parse_query` + `extract_path` in one call.
-- [`PathTriple`](src/sparql/mod.rs:56) — holds the extracted `subject`
-  ([`TermPattern`]), `path` ([`PropertyPathExpression`]), and `object`
-  ([`TermPattern`]).
-- [`ExtractError`](src/sparql/mod.rs:25) — error enum for extraction failures
+- [`parse_rpq(sparql)`](src/sparql/mod.rs) — parses a SPARQL string with
+  `SparqlParser` and returns an [`RpqQuery`](src/rpq/mod.rs).
+- [`extract_rpq(query)`](src/sparql/mod.rs) — validates a parsed [`spargebra::Query`] is a
+  `SELECT` with a single path pattern and returns an [`RpqQuery`](src/rpq/mod.rs).
+  Use this when you construct a custom [`SparqlParser`](https://docs.rs/spargebra) (e.g. with
+  prefix declarations) and call `parse_query` yourself.
+- [`ExtractError`](src/sparql/mod.rs) — error enum for extraction failures
   (`NotSelect`, `NotSinglePath`, `UnsupportedSubject`, `UnsupportedObject`,
-  `VariablePredicate`).
-- [`RpqParseError`](src/sparql/mod.rs:198) — combined error for [`parse_rpq`]
-  wrapping both `spargebra::SparqlSyntaxError` and [`ExtractError`].
-- [`DEFAULT_BASE_IRI`](src/sparql/mod.rs:38) — `"http://example.org/"`, the
-  default base IRI constant.
+  `VariablePredicate`). Converts to [`RpqError::Extract`](src/rpq/mod.rs) via `#[from]`.
 
-The module also handles spargebra's desugaring of sequence paths
-(`?x <a>/<b>/<c> ?y`) from a chain of BGP triples back into a single
-[`PropertyPathExpression::Sequence`].
+Call [`RpqQuery::strip_base`](src/rpq/mod.rs) when graph edge labels are short names
+and the parsed query contains full IRIs sharing a common prefix.
+
+The module handles spargebra's desugaring of sequence paths (`?x <a>/<b>/<c> ?y`)
+from a chain of BGP triples back into a single path expression.
 
 ### FFI layer
 
@@ -280,7 +282,9 @@ LAGraph. Safe Rust wrappers live in [`graph::mod`](src/graph/mod.rs):
 - [`LagraphGraph`](src/graph/mod.rs:48) — RAII wrapper around `LAGraph_Graph` (calls
   `LAGraph_Delete` on drop). Also provides
   [`LagraphGraph::from_coo()`](src/graph/mod.rs:85) to build directly from COO arrays.
-- [`GraphblasVector`](src/graph/mod.rs:124) — RAII wrapper around `GrB_Vector`.
+- [`GraphblasVector`](src/graph/mod.rs:128) — RAII wrapper around `GrB_Vector`
+  (derives `Debug`).
+- [`GraphblasMatrix`](src/graph/mod.rs) — RAII wrapper around `GrB_Matrix` (`dup` + `free` on drop).
 - [`ensure_grb_init()`](src/graph/mod.rs:39) — one-time `LAGraph_Init` via `std::sync::Once`.
 
 ### Macros (`src/utils.rs`)
@@ -296,17 +300,22 @@ Two `#[macro_export]` macros handle FFI error mapping:
 ## Coding Conventions
 
 - **Rust edition 2024**.
-- Error handling via `thiserror` derive macros; two main error enums:
-  [`GraphError`](src/graph/mod.rs:15) and [`FormatError`](src/formats/mod.rs:24).
+- Error handling via `thiserror` derive macros; three main error enums:
+  [`GraphError`](src/graph/mod.rs:15), [`FormatError`](src/formats/mod.rs:24),
+  and [`RpqError`](src/rpq/mod.rs:78).
 - `FormatError` converts into `GraphError` via `#[from] FormatError` on the
   `GraphError::Format` variant.
-- Unsafe FFI calls are confined to `lagraph_sys`, `graph/mod.rs`, and
-  `graph/inmemory.rs`. All raw pointers are wrapped in RAII types that free
-  resources on drop.
-- `unsafe impl Send + Sync` is provided for `LagraphGraph` and
-  `GraphblasVector` because GraphBLAS handles are thread-safe after init.
+- `GraphError` converts into `RpqError` via `#[from] GraphError` on the
+  `RpqError::Graph` variant, enabling `?` propagation in evaluators.
+- Unsafe FFI calls are confined to `lagraph_sys`, `graph/mod.rs`,
+  `graph/inmemory.rs`, `rpq/nfarpq.rs`, and `rpq/rpqmatrix.rs`. All raw pointers are wrapped in
+  RAII types that free resources on drop.
+- `unsafe impl Send + Sync` is provided for `LagraphGraph`,
+  `GraphblasVector`, and `GraphblasMatrix` because GraphBLAS handles are thread-safe after init.
 - Unit tests live in `#[cfg(test)] mod tests` blocks inside each module.
-  Integration tests that need GraphBLAS live in [`tests/inmemory_tests.rs`](tests/inmemory_tests.rs).
+  Integration tests that need GraphBLAS live in [`tests/inmemory_tests.rs`](tests/inmemory_tests.rs),
+  [`tests/mm_tests.rs`](tests/mm_tests.rs), [`tests/nfarpq_tests.rs`](tests/nfarpq_tests.rs),
+  and [`tests/rpqmatrix_tests.rs`](tests/rpqmatrix_tests.rs).
 
 ## Testing
 

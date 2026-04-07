@@ -153,6 +153,22 @@ impl Drop for GraphblasVector {
 unsafe impl Send for GraphblasVector {}
 unsafe impl Sync for GraphblasVector {}
 
+#[derive(Debug)]
+pub struct GraphblasMatrix {
+    pub inner: GrB_Matrix,
+}
+
+impl Drop for GraphblasMatrix {
+    fn drop(&mut self) {
+        if !self.inner.is_null() {
+            let _ = grb_ok!(GrB_Matrix_free(&mut self.inner));
+        }
+    }
+}
+
+unsafe impl Send for GraphblasMatrix {}
+unsafe impl Sync for GraphblasMatrix {}
+
 /// A directed, labelled edge as produced by format parsers.
 #[derive(Debug, Clone)]
 pub struct Edge {
@@ -190,10 +206,8 @@ pub trait GraphBuilder: Default + Sized {
 
 /// An immutable, read-only view of a Boolean-decomposed graph.
 pub trait GraphDecomposition {
-    type Error: std::error::Error;
-
     /// Returns the [`LagraphGraph`] for `label`.
-    fn get_graph(&self, label: &str) -> Result<Arc<LagraphGraph>, Self::Error>;
+    fn get_graph(&self, label: &str) -> Result<Arc<LagraphGraph>, GraphError>;
 
     /// Translates a string ID to a contiguous matrix index.
     fn get_node_id(&self, string_id: &str) -> Option<usize>;

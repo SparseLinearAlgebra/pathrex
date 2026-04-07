@@ -1,27 +1,8 @@
 use pathrex::formats::csv::Csv;
 use pathrex::graph::{
-    Backend, Edge, Graph, GraphBuilder, GraphDecomposition, GraphError, InMemory, InMemoryBuilder,
+    Edge, Graph, GraphBuilder, GraphDecomposition, GraphError, InMemory, InMemoryBuilder,
 };
-
-fn build_graph(edges: &[(&str, &str, &str)]) -> <InMemory as Backend>::Graph {
-    let builder = InMemoryBuilder::new();
-    let edges = edges
-        .iter()
-        .cloned()
-        .map(|(s, t, l)| {
-            Ok(Edge {
-                source: s.to_string(),
-                label: l.to_string(),
-                target: t.to_string(),
-            })
-        })
-        .collect::<Vec<Result<Edge, GraphError>>>();
-    builder
-        .with_stream(edges.into_iter())
-        .expect("Should insert edges stream")
-        .build()
-        .expect("build must succeed")
-}
+use pathrex::utils::build_graph;
 
 #[test]
 fn node_ids_are_unique() {

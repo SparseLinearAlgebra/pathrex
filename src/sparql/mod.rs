@@ -1,24 +1,21 @@
-//! SPARQL parsing and validation utilities.
+//! SPARQL parsing utilities.
 //!
-//! This module provides helpers for parsing SPARQL query strings using the
-//! [`spargebra`] crate and extracting the property path triple pattern that
-//! pathrex's RPQ evaluators operate on.
 //!
 //! # Supported query form
 //!
-//! SELECT queries with a single triple pattern in the
-//! WHERE clause are supported:
+//! SELECT queries with exactly one triple or property path pattern:
 //!
 //! ```sparql
-//! SELECT ?x ?y WHERE { ?x <knows> ?y . }
+//! BASE <http://example.org/>
 //! SELECT ?x ?y WHERE { ?x <knows>/<likes>* ?y . }
-//! SELECT ?x WHERE { <http://example.org/alice> <knows>+ ?x . }
 //! ```
 
 use spargebra::algebra::{GraphPattern, PropertyPathExpression};
 use spargebra::term::{NamedNodePattern, TermPattern, TriplePattern};
-use spargebra::{Query, SparqlParser, SparqlSyntaxError};
+use spargebra::{Query, SparqlParser};
 use thiserror::Error;
+
+use crate::rpq::{Endpoint, PathExpr, RpqError, RpqQuery};
 
 /// Error returned when extracting a property path triple from a parsed query.
 #[derive(Debug, Error)]
@@ -35,235 +32,283 @@ pub enum ExtractError {
     VariablePredicate,
 }
 
-pub const DEFAULT_BASE_IRI: &str = "http://example.org/";
-
-/// Parse a SPARQL query string into a [`spargebra::Query`].
-///
-/// # Errors
-///
-/// Returns [`SparqlSyntaxError`] if the input is not valid SPARQL 1.1.
-pub fn parse_query(sparql: &str) -> Result<Query, SparqlSyntaxError> {
-    SparqlParser::new()
-        // .with_base_iri(DEFAULT_BASE_IRI)
-        // .expect("DEFAULT_BASE_IRI is a valid IRI")
-        .parse_query(sparql)
+/// Parse a SPARQL string and produce an [`RpqQuery`].
+pub fn parse_rpq(sparql: &str) -> Result<RpqQuery, RpqError> {
+    let query = SparqlParser::new().parse_query(sparql)?;
+    extract_rpq(&query)
 }
 
-/// Extracted triple components from a parsed SPARQL query.
-///
-/// Holds owned data so callers do not need to keep the [`Query`] alive.
-#[derive(Debug, Clone)]
-pub struct PathTriple {
-    pub subject: TermPattern,
-    pub path: PropertyPathExpression,
-    pub object: TermPattern,
-}
-
-/// Extract the property path triple from a parsed SPARQL [`Query`].
-///
-/// Validates that the query is a `SELECT` with a single triple or property
-/// path pattern in the WHERE clause and returns a [`PathTriple`] with the
-/// three components.
-pub fn extract_path(query: &Query) -> Result<PathTriple, ExtractError> {
+pub fn extract_rpq(query: &Query) -> Result<RpqQuery, RpqError> {
     let pattern = match query {
         Query::Select { pattern, .. } => pattern,
-        _ => return Err(ExtractError::NotSelect),
+        _ => return Err(ExtractError::NotSelect.into()),
     };
 
-    let triple = extract_path_from_pattern(pattern)?;
-
-    validate_term(&triple.subject, true)?;
-    validate_term(&triple.object, false)?;
-
-    Ok(triple)
+    extract_from_pattern(pattern)
 }
 
-/// Recursively unwrap `GraphPattern` wrappers (Project, Distinct, etc.) to
-/// find the single triple or path pattern inside.
-fn extract_path_from_pattern(pattern: &GraphPattern) -> Result<PathTriple, ExtractError> {
+fn extract_from_pattern(pattern: &GraphPattern) -> Result<RpqQuery, RpqError> {
     match pattern {
         GraphPattern::Path {
             subject,
             path,
             object,
-        } => Ok(PathTriple {
-            subject: subject.clone(),
-            path: path.clone(),
-            object: object.clone(),
-        }),
+        } => {
+            let subject = term_to_endpoint(subject)?;
+            let object = term_to_endpoint(object)?;
+            let path = path_from_spargebra(path)?;
+            Ok(RpqQuery {
+                subject,
+                path,
+                object,
+            })
+        }
 
         GraphPattern::Bgp { patterns } => extract_from_bgp(patterns),
 
-        GraphPattern::Project { inner, .. } => extract_path_from_pattern(inner),
+        GraphPattern::Join { .. } => extract_from_join(pattern),
 
-        GraphPattern::Distinct { inner } => extract_path_from_pattern(inner),
-        GraphPattern::Reduced { inner } => extract_path_from_pattern(inner),
-        GraphPattern::Slice { inner, .. } => extract_path_from_pattern(inner),
+        GraphPattern::Project { inner, .. } => extract_from_pattern(inner),
+        GraphPattern::Distinct { inner } => extract_from_pattern(inner),
+        GraphPattern::Reduced { inner } => extract_from_pattern(inner),
+        GraphPattern::Slice { inner, .. } => extract_from_pattern(inner),
 
-        _ => Err(ExtractError::NotSinglePath),
+        _ => Err(ExtractError::NotSinglePath.into()),
     }
 }
 
-/// Extract a [`PathTriple`] from a BGP's triple patterns.
-///
-/// Handles two cases:
-/// 1. **Single triple** — `?x <knows> ?y` → wraps predicate as
-///    [`PropertyPathExpression::NamedNode`].
-/// 2. **Desugared sequence path** — spargebra rewrites `?x <a>/<b>/<c> ?y`
-///    into a chain of triples linked by blank-node intermediates:
-///    `?x <a> _:b0 . _:b0 <b> _:b1 . _:b1 <c> ?y`.
-///    We detect this pattern and reconstruct a
-///    [`PropertyPathExpression::Sequence`].
-fn extract_from_bgp(patterns: &[TriplePattern]) -> Result<PathTriple, ExtractError> {
-    if patterns.is_empty() {
-        return Err(ExtractError::NotSinglePath);
-    }
-    if patterns.len() == 1 {
-        return bgp_triple_to_path_triple(&patterns[0]);
+struct JoinStep {
+    subject: TermPattern,
+    path: PathExpr,
+    object: TermPattern,
+}
+
+fn extract_from_join(pattern: &GraphPattern) -> Result<RpqQuery, RpqError> {
+    let mut steps: Vec<JoinStep> = Vec::new();
+    collect_join_steps(pattern, &mut steps)?;
+
+    if steps.is_empty() {
+        return Err(ExtractError::NotSinglePath.into());
     }
 
-    let mut steps: Vec<PropertyPathExpression> = Vec::with_capacity(patterns.len());
+    let subject = term_to_endpoint(&steps[0].subject)?;
+    let object = term_to_endpoint(&steps[steps.len() - 1].object)?;
+
+    let path = steps
+        .into_iter()
+        .map(|s| s.path)
+        .reduce(|acc, p| PathExpr::Sequence(Box::new(acc), Box::new(p)))
+        .unwrap();
+
+    Ok(RpqQuery {
+        subject,
+        path,
+        object,
+    })
+}
+
+fn collect_join_steps(pattern: &GraphPattern, steps: &mut Vec<JoinStep>) -> Result<(), RpqError> {
+    match pattern {
+        GraphPattern::Join { left, right } => {
+            collect_join_steps(left, steps)?;
+            collect_join_steps(right, steps)?;
+        }
+
+        GraphPattern::Path {
+            subject,
+            path,
+            object,
+        } => {
+            steps.push(JoinStep {
+                subject: subject.clone(),
+                path: path_from_spargebra(path)?,
+                object: object.clone(),
+            });
+        }
+
+        GraphPattern::Bgp { patterns } => {
+            for triple in patterns {
+                let path = match &triple.predicate {
+                    NamedNodePattern::NamedNode(nn) => PathExpr::Label(nn.as_str().to_owned()),
+                    NamedNodePattern::Variable(_) => {
+                        return Err(ExtractError::VariablePredicate.into());
+                    }
+                };
+                steps.push(JoinStep {
+                    subject: triple.subject.clone(),
+                    path,
+                    object: triple.object.clone(),
+                });
+            }
+        }
+
+        _ => return Err(ExtractError::NotSinglePath.into()),
+    }
+    Ok(())
+}
+
+/// Extract from a BGP.
+///
+/// Handles:
+/// 1. A single triple `?x <p> ?y` → `PathExpr::Label`.
+/// 2. Spargebra's desugared sequence `?x <a>/<b>/<c> ?y` → chain of triples
+///    linked by blank-node intermediates, reconstructed as `PathExpr::Sequence`.
+fn extract_from_bgp(patterns: &[TriplePattern]) -> Result<RpqQuery, RpqError> {
+    if patterns.is_empty() {
+        return Err(ExtractError::NotSinglePath.into());
+    }
+
+    if patterns.len() == 1 {
+        let t = &patterns[0];
+        let path = match &t.predicate {
+            NamedNodePattern::NamedNode(nn) => PathExpr::Label(nn.as_str().to_owned()),
+            NamedNodePattern::Variable(_) => return Err(ExtractError::VariablePredicate.into()),
+        };
+        let subject = term_to_endpoint(&t.subject)?;
+        let object = term_to_endpoint(&t.object)?;
+        return Ok(RpqQuery {
+            subject,
+            path,
+            object,
+        });
+    }
+
+    let mut steps: Vec<PathExpr> = Vec::with_capacity(patterns.len());
     for triple in patterns {
         match &triple.predicate {
             NamedNodePattern::NamedNode(nn) => {
-                steps.push(PropertyPathExpression::NamedNode(nn.clone()));
+                steps.push(PathExpr::Label(nn.as_str().to_owned()));
             }
-            NamedNodePattern::Variable(_) => return Err(ExtractError::NotSinglePath),
+            NamedNodePattern::Variable(_) => return Err(ExtractError::NotSinglePath.into()),
         }
     }
 
     for i in 0..patterns.len() - 1 {
         let obj_bn = match &patterns[i].object {
             TermPattern::BlankNode(bn) => bn,
-            _ => return Err(ExtractError::NotSinglePath),
+            _ => return Err(ExtractError::NotSinglePath.into()),
         };
         let subj_bn = match &patterns[i + 1].subject {
             TermPattern::BlankNode(bn) => bn,
-            _ => return Err(ExtractError::NotSinglePath),
+            _ => return Err(ExtractError::NotSinglePath.into()),
         };
         if obj_bn != subj_bn {
-            return Err(ExtractError::NotSinglePath);
+            return Err(ExtractError::NotSinglePath.into());
         }
     }
 
     let path = steps
         .into_iter()
-        .reduce(|acc, step| PropertyPathExpression::Sequence(Box::new(acc), Box::new(step)))
+        .reduce(|acc, step| PathExpr::Sequence(Box::new(acc), Box::new(step)))
         .unwrap();
 
-    Ok(PathTriple {
-        subject: patterns[0].subject.clone(),
+    let subject = term_to_endpoint(&patterns[0].subject)?;
+    let object = term_to_endpoint(&patterns.last().unwrap().object)?;
+
+    Ok(RpqQuery {
+        subject,
         path,
-        object: patterns.last().unwrap().object.clone(),
+        object,
     })
 }
 
-/// Convert a plain BGP [`TriplePattern`] into a [`PathTriple`] by wrapping
-/// the predicate as a [`PropertyPathExpression::NamedNode`].
-fn bgp_triple_to_path_triple(triple: &TriplePattern) -> Result<PathTriple, ExtractError> {
-    let path = match &triple.predicate {
-        NamedNodePattern::NamedNode(nn) => PropertyPathExpression::NamedNode(nn.clone()),
-        NamedNodePattern::Variable(_) => return Err(ExtractError::VariablePredicate),
-    };
-    Ok(PathTriple {
-        subject: triple.subject.clone(),
-        path,
-        object: triple.object.clone(),
-    })
-}
-
-/// Validate that a [`TermPattern`] is a supported vertex form.
-fn validate_term(term: &TermPattern, is_subject: bool) -> Result<(), ExtractError> {
+fn term_to_endpoint(term: &TermPattern) -> Result<Endpoint, ExtractError> {
     match term {
-        TermPattern::Variable(_) | TermPattern::NamedNode(_) => Ok(()),
+        TermPattern::Variable(v) => Ok(Endpoint::Variable(v.as_str().to_owned())),
+        TermPattern::NamedNode(nn) => Ok(Endpoint::Named(nn.as_str().to_owned())),
         other => {
             let msg = format!("{other}");
-            if is_subject {
-                Err(ExtractError::UnsupportedSubject(msg))
-            } else {
-                Err(ExtractError::UnsupportedObject(msg))
-            }
+            Err(ExtractError::UnsupportedSubject(msg))
         }
     }
 }
 
-pub fn parse_rpq(sparql: &str) -> Result<PathTriple, RpqParseError> {
-    let query = parse_query(sparql)?;
-    let triple = extract_path(&query)?;
-    Ok(triple)
-}
+fn path_from_spargebra(path: &PropertyPathExpression) -> Result<PathExpr, RpqError> {
+    match path {
+        PropertyPathExpression::NamedNode(nn) => Ok(PathExpr::Label(nn.as_str().to_owned())),
 
-/// Combined error for [`parse_rpq`].
-#[derive(Debug, Error)]
-pub enum RpqParseError {
-    #[error("SPARQL syntax error: {0}")]
-    Syntax(#[from] SparqlSyntaxError),
-    #[error("query extraction error: {0}")]
-    Extract(#[from] ExtractError),
+        PropertyPathExpression::Sequence(lhs, rhs) => Ok(PathExpr::Sequence(
+            Box::new(path_from_spargebra(lhs)?),
+            Box::new(path_from_spargebra(rhs)?),
+        )),
+
+        PropertyPathExpression::Alternative(lhs, rhs) => Ok(PathExpr::Alternative(
+            Box::new(path_from_spargebra(lhs)?),
+            Box::new(path_from_spargebra(rhs)?),
+        )),
+
+        PropertyPathExpression::ZeroOrMore(inner) => {
+            Ok(PathExpr::ZeroOrMore(Box::new(path_from_spargebra(inner)?)))
+        }
+
+        PropertyPathExpression::OneOrMore(inner) => {
+            Ok(PathExpr::OneOrMore(Box::new(path_from_spargebra(inner)?)))
+        }
+
+        PropertyPathExpression::ZeroOrOne(inner) => {
+            Ok(PathExpr::ZeroOrOne(Box::new(path_from_spargebra(inner)?)))
+        }
+
+        PropertyPathExpression::Reverse(_) => Err(RpqError::UnsupportedPath(
+            "Reverse paths are not supported".into(),
+        )),
+
+        PropertyPathExpression::NegatedPropertySet(_) => Err(RpqError::UnsupportedPath(
+            "NegatedPropertySet paths are not supported".into(),
+        )),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use spargebra::algebra::PropertyPathExpression;
-    use spargebra::term::TermPattern;
 
-    pub const DEFAULT_BASE_IRI: &str = "BASE <http://example.org/>";
+    const BASE: &str = "http://example.org/";
 
-    fn parse_and_extract(sparql: &str) -> PathTriple {
-        let q = format!("{DEFAULT_BASE_IRI} {sparql}");
-        parse_rpq(&q).expect("parse_rpq failed")
+    fn sparql_with_base(body: &str) -> String {
+        format!("BASE <{BASE}> {body}")
+    }
+
+    fn parse_and_strip(sparql_body: &str) -> RpqQuery {
+        let full = sparql_with_base(sparql_body);
+        let mut q = parse_rpq(&full).expect("parse_rpq failed");
+        q.strip_base(BASE);
+        q
     }
 
     #[test]
     fn test_plain_triple_bgp() {
-        let triple = parse_and_extract("SELECT ?x ?y WHERE { ?x <knows> ?y . }");
-        assert!(matches!(triple.subject, TermPattern::Variable(_)));
-        assert!(matches!(triple.object, TermPattern::Variable(_)));
-        assert!(matches!(triple.path, PropertyPathExpression::NamedNode(_)));
+        let q = parse_and_strip("SELECT ?x ?y WHERE { ?x <knows> ?y . }");
+        assert!(matches!(q.subject, Endpoint::Variable(_)));
+        assert!(matches!(q.object, Endpoint::Variable(_)));
+        assert_eq!(q.path, PathExpr::Label("knows".into()));
     }
 
     #[test]
     fn test_variable_variable_zero_or_more() {
-        let triple = parse_and_extract("SELECT ?x ?y WHERE { ?x <knows>* ?y . }");
-        assert!(matches!(triple.subject, TermPattern::Variable(_)));
-        assert!(matches!(triple.object, TermPattern::Variable(_)));
-        assert!(matches!(triple.path, PropertyPathExpression::ZeroOrMore(_)));
+        let q = parse_and_strip("SELECT ?x ?y WHERE { ?x <knows>* ?y . }");
+        assert!(matches!(q.path, PathExpr::ZeroOrMore(_)));
     }
 
     #[test]
     fn test_variable_variable_sequence() {
-        let triple = parse_and_extract("SELECT ?x ?y WHERE { ?x <knows>/<likes> ?y . }");
-        assert!(matches!(triple.subject, TermPattern::Variable(_)));
-        assert!(matches!(triple.object, TermPattern::Variable(_)));
-        assert!(matches!(
-            triple.path,
-            PropertyPathExpression::Sequence(_, _)
-        ));
+        let q = parse_and_strip("SELECT ?x ?y WHERE { ?x <knows>/<likes> ?y . }");
+        assert!(matches!(q.path, PathExpr::Sequence(_, _)));
     }
 
     #[test]
     fn test_named_variable_sequence() {
-        let triple = parse_and_extract("SELECT ?y WHERE { <alice> <knows>/<likes> ?y . }");
-        assert!(matches!(triple.subject, TermPattern::NamedNode(_)));
-        assert!(matches!(triple.object, TermPattern::Variable(_)));
-        assert!(matches!(
-            triple.path,
-            PropertyPathExpression::Sequence(_, _)
-        ));
+        let q = parse_and_strip("SELECT ?y WHERE { <alice> <knows>/<likes> ?y . }");
+        assert_eq!(q.subject, Endpoint::Named("alice".into()));
+        assert!(matches!(q.path, PathExpr::Sequence(_, _)));
     }
 
     #[test]
     fn test_three_step_sequence() {
-        let triple = parse_and_extract("SELECT ?x ?y WHERE { ?x <a>/<b>/<c> ?y . }");
-        assert!(matches!(triple.subject, TermPattern::Variable(_)));
-        assert!(matches!(triple.object, TermPattern::Variable(_)));
-        match &triple.path {
-            PropertyPathExpression::Sequence(lhs, _rhs) => {
-                assert!(matches!(
-                    lhs.as_ref(),
-                    PropertyPathExpression::Sequence(_, _)
-                ));
+        let q = parse_and_strip("SELECT ?x ?y WHERE { ?x <a>/<b>/<c> ?y . }");
+        match &q.path {
+            PathExpr::Sequence(lhs, _) => {
+                assert!(matches!(lhs.as_ref(), PathExpr::Sequence(_, _)));
             }
             other => panic!("expected Sequence, got {other:?}"),
         }
@@ -271,65 +316,65 @@ mod tests {
 
     #[test]
     fn test_variable_named_star() {
-        let triple = parse_and_extract("SELECT ?x WHERE { ?x <knows>* <bob> . }");
-        assert!(matches!(triple.subject, TermPattern::Variable(_)));
-        assert!(matches!(triple.object, TermPattern::NamedNode(_)));
-        assert!(matches!(triple.path, PropertyPathExpression::ZeroOrMore(_)));
+        let q = parse_and_strip("SELECT ?x WHERE { ?x <knows>* <bob> . }");
+        assert_eq!(q.object, Endpoint::Named("bob".into()));
+        assert!(matches!(q.path, PathExpr::ZeroOrMore(_)));
     }
 
     #[test]
     fn test_alternative_path() {
-        let triple = parse_and_extract("SELECT ?x ?y WHERE { ?x <a>|<b> ?y . }");
-        assert!(matches!(
-            triple.path,
-            PropertyPathExpression::Alternative(_, _)
-        ));
+        let q = parse_and_strip("SELECT ?x ?y WHERE { ?x <a>|<b> ?y . }");
+        assert!(matches!(q.path, PathExpr::Alternative(_, _)));
     }
 
     #[test]
     fn test_one_or_more() {
-        let triple = parse_and_extract("SELECT ?x ?y WHERE { ?x <knows>+ ?y . }");
-        assert!(matches!(triple.path, PropertyPathExpression::OneOrMore(_)));
+        let q = parse_and_strip("SELECT ?x ?y WHERE { ?x <knows>+ ?y . }");
+        assert!(matches!(q.path, PathExpr::OneOrMore(_)));
     }
 
     #[test]
     fn test_zero_or_one() {
-        let triple = parse_and_extract("SELECT ?x ?y WHERE { ?x <knows>? ?y . }");
-        assert!(matches!(triple.path, PropertyPathExpression::ZeroOrOne(_)));
+        let q = parse_and_strip("SELECT ?x ?y WHERE { ?x <knows>? ?y . }");
+        assert!(matches!(q.path, PathExpr::ZeroOrOne(_)));
     }
 
     #[test]
     fn test_complex_path() {
-        let triple = parse_and_extract("SELECT ?x ?y WHERE { ?x (<a>/<b>)* ?y . }");
-        assert!(matches!(triple.path, PropertyPathExpression::ZeroOrMore(_)));
+        let q = parse_and_strip("SELECT ?x ?y WHERE { ?x (<a>/<b>)* ?y . }");
+        assert!(matches!(q.path, PathExpr::ZeroOrMore(_)));
     }
 
     #[test]
     fn test_not_select_returns_error() {
-        let sparql = format!("{DEFAULT_BASE_IRI} ASK {{ ?x <knows> ?y }}");
-        let query = parse_query(&sparql).expect("parse failed");
-        let result = extract_path(&query);
-        assert!(matches!(result, Err(ExtractError::NotSelect)));
+        let sparql = sparql_with_base("ASK { ?x <knows> ?y }");
+        let r = parse_rpq(&sparql);
+        assert!(matches!(r, Err(RpqError::Extract(ExtractError::NotSelect))));
     }
 
     #[test]
     fn test_multiple_triples_returns_error() {
-        let sparql = format!("{DEFAULT_BASE_IRI} SELECT ?x ?y WHERE {{ ?x <a> ?z . ?z <b> ?y . }}");
-        let result = parse_rpq(&sparql);
+        let sparql = sparql_with_base("SELECT ?x ?y WHERE { ?x <a> ?z . ?z <b> ?y . }");
+        let r = parse_rpq(&sparql);
         assert!(matches!(
-            result,
-            Err(RpqParseError::Extract(ExtractError::NotSinglePath))
+            r,
+            Err(RpqError::Extract(ExtractError::NotSinglePath))
         ));
     }
 
     #[test]
-    fn test_default_base_iri_resolves_relative_iris() {
-        let triple = parse_and_extract("SELECT ?x ?y WHERE { ?x <knows> ?y . }");
-        if let PropertyPathExpression::NamedNode(nn) = &triple.path {
-            assert_eq!(nn.as_str(), "http://example.org/knows");
-        } else {
-            panic!("expected NamedNode path");
-        }
+    fn test_full_iris_before_strip() {
+        let sparql = sparql_with_base("SELECT ?x ?y WHERE { ?x <knows> ?y . }");
+        let q = parse_rpq(&sparql).unwrap();
+        assert_eq!(q.path, PathExpr::Label("http://example.org/knows".into()));
+    }
+
+    #[test]
+    fn test_strip_base_removes_prefix() {
+        let sparql = sparql_with_base("SELECT ?x ?y WHERE { ?x <knows> ?y . }");
+        let mut q = parse_rpq(&sparql).unwrap();
+        q.strip_base(BASE);
+        assert_eq!(q.path, PathExpr::Label("knows".into()));
     }
 
     #[test]
@@ -339,10 +384,15 @@ mod tests {
             .unwrap()
             .parse_query("SELECT ?x ?y WHERE { ?x ex:knows/ex:likes ?y . }")
             .expect("parse with prefix failed");
-        let triple = extract_path(&query).expect("extract failed");
-        assert!(matches!(
-            triple.path,
-            PropertyPathExpression::Sequence(_, _)
-        ));
+        let mut q = extract_rpq(&query).expect("extract failed");
+        q.strip_base(BASE);
+        assert!(matches!(q.path, PathExpr::Sequence(_, _)));
+    }
+
+    #[test]
+    fn test_negated_property_set_rejected() {
+        let sparql = sparql_with_base("SELECT ?x ?y WHERE { ?x !(<knows>) ?y . }");
+        let r = parse_rpq(&sparql);
+        assert!(matches!(r, Err(RpqError::UnsupportedPath(_))));
     }
 }
