@@ -11,6 +11,8 @@ oxrdf = "0.3.3"
 oxttl = "0.2.3"
 spargebra = "0.4.6"
 thiserror = "1.0"
+rand = "0.8"
+expect-test = "1.5.1"
 
 [features]
 regenerate-bindings = ["bindgen"]

@@ -3,13 +3,14 @@ use std::{collections::HashMap, io::Read};
 
 use crate::formats::mm::{load_mm_file, parse_index_map};
 use crate::formats::{Csv, MatrixMarket};
+use crate::graph::ReduceType;
 use crate::{
     graph::GraphSource,
     lagraph_sys::{GrB_Index, GrB_Matrix, GrB_Matrix_free, LAGraph_Kind},
 };
 
 use super::{
-    Backend, Edge, GraphBuilder, GraphDecomposition, GraphError, LagraphGraph, ensure_grb_init,
+    ensure_grb_init, Backend, Edge, GraphBuilder, GraphDecomposition, GraphError, LagraphGraph,
 };
 
 /// Marker type for the in-memory GraphBLAS-backed backend.
@@ -141,8 +142,20 @@ impl GraphBuilder for InMemoryBuilder {
 
         let mut graphs: HashMap<String, Arc<LagraphGraph>> =
             HashMap::with_capacity(self.label_buffers.len() + self.prebuilt.len());
+        let mut catalog: HashMap<String, GraphMetadata> =
+            HashMap::with_capacity(self.label_buffers.len() + self.prebuilt.len());
 
         for (label, lg) in self.prebuilt {
+            let rreduce = lg.reduces_nvals(ReduceType::ReduceByRows)? as usize;
+            let creduce = lg.reduces_nvals(ReduceType::ReduceByCols)? as usize;
+            catalog.insert(
+                label.clone(),
+                GraphMetadata {
+                    // num_vertices: nrows,
+                    row_projections: rreduce,
+                    column_projections: creduce,
+                },
+            );
             graphs.insert(label, Arc::new(lg));
         }
 
@@ -159,6 +172,17 @@ impl GraphBuilder for InMemoryBuilder {
                 LAGraph_Kind::LAGraph_ADJACENCY_DIRECTED,
             )?;
 
+            let rreduce = lg.reduces_nvals(ReduceType::ReduceByRows)? as usize;
+            let creduce = lg.reduces_nvals(ReduceType::ReduceByCols)? as usize;
+            catalog.insert(
+                label.clone(),
+                GraphMetadata {
+                    // num_vertices: nrows,
+                    row_projections: rreduce,
+                    column_projections: creduce,
+                },
+            );
+
             graphs.insert(label.clone(), Arc::new(lg));
         }
 
@@ -166,8 +190,17 @@ impl GraphBuilder for InMemoryBuilder {
             node_to_id: self.node_to_id,
             id_to_node: self.id_to_node,
             graphs,
+            catalog,
         })
     }
+}
+
+/// Metadata about a labeled graph in the decomposition.
+#[derive(Debug, Clone, Default)]
+pub struct GraphMetadata {
+    // pub num_vertices: usize,
+    pub row_projections: usize,
+    pub column_projections: usize,
 }
 
 /// Immutable, read-only Boolean-decomposed graph backed by LAGraph graphs.
@@ -175,6 +208,7 @@ pub struct InMemoryGraph {
     node_to_id: HashMap<String, usize>,
     id_to_node: HashMap<usize, String>,
     graphs: HashMap<String, Arc<LagraphGraph>>,
+    catalog: HashMap<String, GraphMetadata>,
 }
 
 impl GraphDecomposition for InMemoryGraph {
@@ -198,6 +232,20 @@ impl GraphDecomposition for InMemoryGraph {
     fn num_nodes(&self) -> usize {
         self.id_to_node.len()
     }
+
+    fn get_meta(&self, label: &str) -> Option<&GraphMetadata> {
+        self.get_metadata(label)
+    }
+}
+
+impl InMemoryGraph {
+    pub fn get_metadata(&self, label: &str) -> Option<&GraphMetadata> {
+        self.catalog.get(label)
+    }
+
+    pub fn catalog(&self) -> &HashMap<String, GraphMetadata> {
+        &self.catalog
+    }
 }
 
 impl<R: Read> GraphSource<InMemoryBuilder> for Csv<R> {
@@ -216,10 +264,8 @@ impl GraphSource<InMemoryBuilder> for MatrixMarket {
     fn apply_to(self, mut builder: InMemoryBuilder) -> Result<InMemoryBuilder, GraphError> {
         let vertices_path = self.dir.join("vertices.txt");
         let (vert_by_idx, vert_by_name) = parse_index_map(&vertices_path)?;
-        let vert_by_idx  =
-            vert_by_idx.into_iter().map(|(i, n)| (i - 1, n)).collect();
-        let vert_by_name =
-            vert_by_name.into_iter().map(|(n, i)| (n, i - 1)).collect();
+        let vert_by_idx = vert_by_idx.into_iter().map(|(i, n)| (i - 1, n)).collect();
+        let vert_by_name = vert_by_name.into_iter().map(|(n, i)| (n, i - 1)).collect();
 
         let (edge_by_idx, _) = parse_index_map(&self.dir.join("edges.txt"))?;
 

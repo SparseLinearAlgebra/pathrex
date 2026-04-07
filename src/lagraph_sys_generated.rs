@@ -290,3 +290,10 @@ unsafe extern "C" {
 unsafe extern "C" {
     pub fn LAGraph_DestroyRpqMatrixPlan(plan: *mut RPQMatrixPlan) -> GrB_Info;
 }
+unsafe extern "C" {
+    pub fn LAGraph_RPQMatrix_reduce(
+        res: *mut GrB_Index,
+        mat: GrB_Matrix,
+        reduce_type: u8,
+    ) -> GrB_Info;
+}

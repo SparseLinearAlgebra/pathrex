@@ -1,6 +1,6 @@
 use pathrex::graph::GraphDecomposition;
 use pathrex::lagraph_sys::{GrB_Index, GrB_Vector_extractTuples_BOOL, GrB_Vector_nvals};
-use pathrex::rpq::rpqmatrix::RpqMatrixEvaluator;
+use pathrex::rpq::rpqmatrix::eval::RpqMatrixEvaluator;
 use pathrex::rpq::{RpqError, RpqEvaluator, RpqResult};
 use pathrex::utils::build_graph;
 use spargebra::algebra::PropertyPathExpression;

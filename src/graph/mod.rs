@@ -2,7 +2,7 @@
 
 pub mod inmemory;
 
-pub use inmemory::{InMemory, InMemoryBuilder, InMemoryGraph};
+pub use inmemory::{GraphMetadata, InMemory, InMemoryBuilder, InMemoryGraph};
 
 use std::marker::PhantomData;
 use std::sync::{Arc, Once};
@@ -11,6 +11,10 @@ use crate::{grb_ok, la_ok, lagraph_sys::*};
 
 use thiserror::Error;
 
+pub enum ReduceType {
+    ReduceByRows,
+    ReduceByCols,
+}
 #[derive(Debug, Error)]
 pub enum GraphError {
     /// A GraphBLAS C call returned a non-SUCCESS info code.
@@ -112,6 +116,19 @@ impl LagraphGraph {
     pub fn check_graph(&self) -> Result<(), GraphError> {
         la_ok!(LAGraph_CheckGraph(self.inner))
     }
+
+    pub fn reduces_nvals(&self, reduce_type: ReduceType) -> Result<GrB_Index, GraphError> {
+        let mut n: GrB_Index = 0;
+        let matrix = unsafe { &*self.inner }.A;
+        grb_ok!(LAGraph_RPQMatrix_reduce(&mut n, matrix, reduce_type as u8))?;
+        Ok(n)
+    }
+    pub fn nvals(&self) -> Result<GrB_Index, GraphError> {
+        let mut n: GrB_Index = 0;
+        let matrix = unsafe { &*self.inner }.A;
+        grb_ok!(GrB_Matrix_nvals(&mut n, matrix))?;
+        Ok(n)
+    }
 }
 
 impl Drop for LagraphGraph {
@@ -202,6 +219,7 @@ pub trait GraphDecomposition {
     /// Translates a matrix index back to a string ID.
     fn get_node_name(&self, mapped_id: usize) -> Option<String>;
     fn num_nodes(&self) -> usize;
+    fn get_meta(&self, label: &str) -> Option<&GraphMetadata>;
 }
 
 /// Associates a backend marker type with a concrete [`GraphBuilder`] and

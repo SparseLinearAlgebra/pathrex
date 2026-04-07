@@ -48,6 +48,10 @@ impl<E: std::error::Error> GraphDecomposition for CountOutput<E> {
     fn num_nodes(&self) -> usize {
         self.0
     }
+
+    fn get_meta(&self, _label: &str) -> Option<&GraphMetadata> {
+        None
+    }
 }
 
 /// A minimal [`GraphBuilder`] that counts pushed edges and produces a [`CountOutput`].

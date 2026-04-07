@@ -87,6 +87,7 @@ fn regenerate_bindings() {
         .allowlist_function("LAGraph_MMRead")
         .allowlist_function("LAGraph_RPQMatrix")
         .allowlist_function("LAGraph_DestroyRpqMatrixPlan")
+        .allowlist_function("LAGraph_RPQMatrix_reduce")
         .default_enum_style(bindgen::EnumVariation::Rust {
             non_exhaustive: false,
         })
