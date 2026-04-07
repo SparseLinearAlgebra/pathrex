@@ -8,6 +8,7 @@ csv = "1.4.0"
 libc = "0.2"
 oxrdf = "0.3.3"
 oxttl = "0.2.3"
+rustfst = "1.2"
 spargebra = "0.4.6"
 thiserror = "1.0"
 

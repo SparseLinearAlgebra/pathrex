@@ -66,6 +66,7 @@ fn regenerate_bindings() {
         .allowlist_function("GrB_Matrix_new")
         .allowlist_function("GrB_Matrix_nvals")
         .allowlist_function("GrB_Matrix_free")
+        .allowlist_function("GrB_Matrix_extractElement_BOOL")
         .allowlist_function("GrB_Matrix_build_BOOL")
         .allowlist_function("GrB_Vector_new")
         .allowlist_function("GrB_Vector_free")
@@ -83,6 +84,7 @@ fn regenerate_bindings() {
         .allowlist_function("LAGraph_Delete")
         .allowlist_function("LAGraph_Cached_AT")
         .allowlist_function("LAGraph_MMRead")
+        .allowlist_function("LAGraph_RegularPathQuery")
         .default_enum_style(bindgen::EnumVariation::Rust {
             non_exhaustive: false,
         })
