@@ -125,6 +125,7 @@ impl Drop for LagraphGraph {
 unsafe impl Send for LagraphGraph {}
 unsafe impl Sync for LagraphGraph {}
 
+#[derive(Debug)]
 pub struct GraphblasVector {
     pub inner: GrB_Vector,
 }
