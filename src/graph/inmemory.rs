@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::{collections::HashMap, io::Read};
 
 use crate::formats::mm::{apply_base_iri, load_mm_file, parse_index_map};
-use crate::formats::{Csv, MatrixMarket};
+use crate::formats::{Csv, MatrixMarket, NTriples};
 use crate::{
     graph::GraphSource,
     lagraph_sys::{GrB_Index, GrB_Matrix, GrB_Matrix_free, LAGraph_Kind},
@@ -242,6 +242,15 @@ impl GraphSource<InMemoryBuilder> for MatrixMarket {
     }
 }
 
+impl<R: Read> GraphSource<InMemoryBuilder> for NTriples<R> {
+    fn apply_to(self, mut builder: InMemoryBuilder) -> Result<InMemoryBuilder, GraphError> {
+        for item in self {
+            builder.push_edge(item?)?;
+        }
+        Ok(builder)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -328,5 +337,24 @@ mod tests {
         assert_eq!(graph.num_nodes(), 3);
         assert!(graph.get_graph("knows").is_ok());
         assert!(graph.get_graph("likes").is_ok());
+    }
+
+    #[test]
+    fn test_with_stream_from_ntriples() {
+        use crate::formats::nt::NTriples;
+
+        let nt = "<http://example.org/A> <http://example.org/knows> <http://example.org/B> .\n\
+                  <http://example.org/B> <http://example.org/knows> <http://example.org/C> .\n\
+                  <http://example.org/A> <http://example.org/likes> <http://example.org/C> .\n";
+
+        let graph = InMemoryBuilder::new()
+            .load(NTriples::new(nt.as_bytes()))
+            .expect("load should succeed")
+            .build()
+            .expect("build should succeed");
+
+        assert_eq!(graph.num_nodes(), 3);
+        assert!(graph.get_graph("http://example.org/knows").is_ok());
+        assert!(graph.get_graph("http://example.org/likes").is_ok());
     }
 }
