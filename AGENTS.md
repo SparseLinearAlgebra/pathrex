@@ -34,7 +34,7 @@ pathrex/
 │       ├── mod.rs              # FormatError enum, re-exports
 │       ├── csv.rs              # Csv<R> — CSV → Edge iterator (CsvConfig, ColumnSpec)
 │       ├── mm.rs               # MatrixMarket directory loader (vertices.txt, edges.txt, *.txt)
-│       └── nt.rs               # NTriples<R> — N-Triples → Edge iterator (full predicate IRI labels)
+│       └── rdf.rs              # Rdf — unified RDF parser (N-Triples, Turtle) → Edge iterator
 ├── tests/
 │   ├── inmemory_tests.rs       # Integration tests for InMemoryBuilder / InMemoryGraph
 │   ├── mm_tests.rs             # Integration tests for MatrixMarket format
@@ -139,7 +139,7 @@ feed itself into a specific [`GraphBuilder`]:
 - [`apply_to(self, builder: B) -> Result<B, B::Error>`](src/graph/mod.rs:169) — consumes the
   source and returns the populated builder.
 
-[`Csv<R>`](src/formats/csv.rs), [`MatrixMarket`](src/formats/mm.rs), and [`NTriples<R>`](src/formats/nt.rs)
+[`Csv<R>`](src/formats/csv.rs), [`MatrixMarket`](src/formats/mm.rs), and [`Rdf`](src/formats/rdf.rs)
 implement `GraphSource<InMemoryBuilder>` (see [`src/graph/inmemory.rs`](src/graph/inmemory.rs)), so they
 can be passed to [`GraphBuilder::load`] and [`Graph::try_from`].
 
@@ -207,7 +207,6 @@ which is used by the MatrixMarket loader.
 Three built-in parsers are available, each yielding
 `Iterator<Item = Result<Edge, FormatError>>` and pluggable into
 `GraphBuilder::load()` via `GraphSource<InMemoryBuilder>` (see [`src/graph/inmemory.rs`](src/graph/inmemory.rs)).
-CSV and MatrixMarket edge loaders are available:
 
 #### `Csv<R>`
 
@@ -251,26 +250,47 @@ Helper functions:
 
 `MatrixMarket` implements `GraphSource<InMemoryBuilder>` in [`src/graph/inmemory.rs`](src/graph/inmemory.rs) (see the `impl` at line 215): `vertices.txt` maps are converted from 1-based file indices to 0-based matrix ids before [`set_node_map`](src/graph/inmemory.rs:67); `edges.txt` indices are unchanged for `n.txt` lookup.
 
-#### `NTriples<R>`
+#### `Rdf` — Unified RDF Parser
 
-[`NTriples<R>`](src/formats/nt.rs:64) parses [W3C N-Triples](https://www.w3.org/TR/n-triples/)
-RDF files using `oxttl` and `oxrdf`. Each triple `(subject, predicate, object)` becomes an
-[`Edge`](src/graph/mod.rs:158) where:
+[`Rdf`](src/formats/rdf.rs) is a unified parser for RDF formats using `oxttl` and `oxrdf`.
+It supports both **N-Triples** (`.nt`) and **Turtle** (`.ttl`) formats via the [`RdfFormat`](src/formats/rdf.rs) enum.
+
+Each triple `(subject, predicate, object)` becomes an [`Edge`](src/graph/mod.rs:158) where:
 
 - `source` — subject IRI or blank-node ID (`_:label`).
 - `target` — object IRI or blank-node ID; triples whose object is an RDF
   literal yield `Err(FormatError::LiteralAsNode)` (callers may filter these out).
-- `label` — predicate IRI, transformed by [`LabelExtraction`](src/formats/nt.rs:38):
-
-| Variant | Behaviour |
-|---|---|
-| `LocalName` (default) | Fragment (`#name`) or last path segment of the predicate IRI |
-| `FullIri` | Full predicate IRI string |
+- `label` — full predicate IRI string (including fragment `#…` when present).
 
 Constructors:
 
-- [`NTriples::new(reader)`](src/formats/nt.rs:70) — uses `LabelExtraction::LocalName`.
-- [`NTriples::with_label_extraction(reader, strategy)`](src/formats/nt.rs:74) — explicit strategy.
+- [`Rdf::new(reader, format)`](src/formats/rdf.rs) — creates a parser with explicit format.
+- [`Rdf::from_path(path)`](src/formats/rdf.rs) — auto-detects format from file extension (`.nt` → N-Triples, `.ttl` → Turtle).
+
+Format detection via [`RdfFormat::from_path(path)`](src/formats/rdf.rs):
+
+| Extension | Format |
+|---|---|
+| `.nt`, `.ntriples` | `RdfFormat::NTriples` |
+| `.ttl`, `.turtle` | `RdfFormat::Turtle` |
+
+Example usage:
+
+```rust
+use pathrex::formats::{Rdf, RdfFormat};
+use pathrex::graph::{Graph, InMemory};
+use std::fs::File;
+
+// Explicit format
+let graph = Graph::<InMemory>::try_from(
+    Rdf::new(File::open("data.ttl")?, RdfFormat::Turtle)
+)?;
+
+// Auto-detect from extension
+let graph = Graph::<InMemory>::try_from(
+    Rdf::from_path("data.ttl")?
+)?;
+```
 
 ### SPARQL parsing (`src/sparql/mod.rs`)
 
@@ -472,7 +492,7 @@ Tests in `src/graph/mod.rs` use `CountingBuilder` / `CountOutput` / `VecSource` 
 [`src/utils.rs`](src/utils.rs) — these do **not** call into GraphBLAS and run without
 native libraries.
 
-Tests in `src/formats/csv.rs` and `src/formats/nt.rs` are pure Rust and need no native dependencies.
+Tests in `src/formats/csv.rs` and `src/formats/rdf.rs` are pure Rust and need no native dependencies.
 
 Tests in `src/sparql/mod.rs` are pure Rust and need no native dependencies.
 

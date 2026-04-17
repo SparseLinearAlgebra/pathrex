@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::{collections::HashMap, io::Read};
 
 use crate::formats::mm::{apply_base_iri, load_mm_file, parse_index_map};
-use crate::formats::{Csv, MatrixMarket, NTriples};
+use crate::formats::{Csv, FormatError, MatrixMarket, Rdf};
 use crate::{
     graph::GraphSource,
     lagraph_sys::{GrB_Index, GrB_Matrix, GrB_Matrix_free, LAGraph_Kind},
@@ -242,10 +242,14 @@ impl GraphSource<InMemoryBuilder> for MatrixMarket {
     }
 }
 
-impl<R: Read> GraphSource<InMemoryBuilder> for NTriples<R> {
+impl GraphSource<InMemoryBuilder> for Rdf {
     fn apply_to(self, mut builder: InMemoryBuilder) -> Result<InMemoryBuilder, GraphError> {
         for item in self {
-            builder.push_edge(item?)?;
+            match item {
+                Ok(edge) => builder.push_edge(edge)?,
+                Err(FormatError::LiteralAsNode) => continue, // Skip literals
+                Err(e) => return Err(e.into()),
+            }
         }
         Ok(builder)
     }
@@ -340,15 +344,15 @@ mod tests {
     }
 
     #[test]
-    fn test_with_stream_from_ntriples() {
-        use crate::formats::nt::NTriples;
+    fn test_with_stream_from_rdf() {
+        use crate::formats::rdf::{Rdf, RdfFormat};
 
-        let nt = "<http://example.org/A> <http://example.org/knows> <http://example.org/B> .\n\
+        let nt = b"<http://example.org/A> <http://example.org/knows> <http://example.org/B> .\n\
                   <http://example.org/B> <http://example.org/knows> <http://example.org/C> .\n\
                   <http://example.org/A> <http://example.org/likes> <http://example.org/C> .\n";
 
         let graph = InMemoryBuilder::new()
-            .load(NTriples::new(nt.as_bytes()))
+            .load(Rdf::new(std::io::Cursor::new(nt.to_vec()), RdfFormat::NTriples))
             .expect("load should succeed")
             .build()
             .expect("build should succeed");

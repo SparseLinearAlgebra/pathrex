@@ -4,28 +4,35 @@
 //!
 //! ```no_run
 //! use pathrex::graph::{Graph, InMemory, GraphDecomposition};
-//! use pathrex::formats::{Csv, NTriples};
+//! use pathrex::formats::{Csv, Rdf, RdfFormat};
 //! use std::fs::File;
 //!
-//! // Build from CSV in one line
+//! // Build from CSV
 //! let g = Graph::<InMemory>::try_from(
 //!     Csv::from_reader(File::open("edges.csv").unwrap()).unwrap()
 //! ).unwrap();
 //!
-//! // Build from N-Triples in one line
+//! // Build from Turtle (auto-detect from extension)
 //! let g2 = Graph::<InMemory>::try_from(
-//!     NTriples::new(File::open("data.nt").unwrap())
+//!     Rdf::from_path("data.ttl").unwrap()
+//! ).unwrap();
+//!
+//! // Build from N-Triples (explicit format)
+//! let g3 = Graph::<InMemory>::try_from(
+//!     Rdf::new(File::open("data.nt").unwrap(), RdfFormat::NTriples)
 //! ).unwrap();
 //! ```
 
 pub mod csv;
 pub mod mm;
-pub mod nt;
+pub mod rdf;
 
 pub use csv::Csv;
 pub use mm::MatrixMarket;
-pub use nt::NTriples;
+pub use rdf::{Rdf, RdfFormat};
 
+
+use oxttl::TurtleParseError;
 use thiserror::Error;
 
 use crate::lagraph_sys::GrB_Info;
@@ -57,9 +64,9 @@ pub enum FormatError {
         reason: String,
     },
 
-    /// An error produced by the N-Triples parser.
-    #[error("N-Triples parse error: {0}")]
-    NTriples(String),
+    /// An error produced by an RDF parser (N-Triples, Turtle, etc.)
+    #[error("RDF parse error: {0}")]
+    Rdf(#[from] TurtleParseError),
 
     /// An RDF literal appeared as a subject or object where a node IRI or
     /// blank node was expected.
