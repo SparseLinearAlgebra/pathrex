@@ -10,6 +10,7 @@
 //! let result: NfaRpqResult = NfaRpqEvaluator.evaluate(&query, &graph)?;
 //! ```
 
+pub mod nfarpq;
 pub mod rpqmatrix;
 
 use crate::graph::{GraphDecomposition, GraphError};
