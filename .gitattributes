@@ -1,1 +1,2 @@
 tests/testdata/** filter=lfs diff=lfs merge=lfs -text
+AGENTS.md merge=union
