@@ -149,22 +149,6 @@ impl GraphblasVector {
         Ok(nvals)
     }
 
-    /// Checks if a specific index has a stored value.
-    pub fn contains(&self, i: GrB_Index) -> Result<bool, GraphError> {
-        let mut value: bool = false;
-        let info = unsafe { GrB_Vector_extractElement_BOOL(&mut value, self.inner, i) };
-        match info {
-            GrB_Info::GrB_SUCCESS => Ok(true),
-            GrB_Info::GrB_NO_VALUE => Ok(false),
-            _ => Err(GraphError::GraphBlas(info)),
-        }
-    }
-
-    /// Stores a boolean value at the given index.
-    pub fn set_bool(&mut self, i: GrB_Index, value: bool) -> Result<(), GraphError> {
-        grb_ok!(GrB_Vector_setElement_BOOL(self.inner, value, i))
-    }
-
     /// Extracts all stored indices from boolean vector.
     pub fn indices(&self) -> Result<Vec<GrB_Index>, GraphError> {
         let nvals = self.nvals()?;
