@@ -140,6 +140,9 @@ unsafe extern "C" {
     pub fn GrB_Vector_setElement_BOOL(w: GrB_Vector, x: bool, i: GrB_Index) -> GrB_Info;
 }
 unsafe extern "C" {
+    pub fn GrB_Vector_extractElement_BOOL(x: *mut bool, v: GrB_Vector, i: GrB_Index) -> GrB_Info;
+}
+unsafe extern "C" {
     pub fn GrB_Vector_extractTuples_BOOL(
         I_: *mut GrB_Index,
         X: *mut bool,

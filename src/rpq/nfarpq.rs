@@ -2,8 +2,8 @@
 
 use crate::graph::{GraphDecomposition, GraphblasVector, LagraphGraph, ensure_grb_init};
 use crate::la_ok;
-use crate::lagraph_sys::*;
 use crate::lagraph_sys::LAGraph_Kind;
+use crate::lagraph_sys::*;
 use crate::rpq::{Endpoint, PathExpr, RpqError, RpqEvaluator, RpqQuery};
 use rustfst::algorithms::closure::{ClosureType, closure};
 use rustfst::algorithms::concat::concat;
@@ -223,7 +223,7 @@ impl RpqEvaluator for NfaRpqEvaluator {
         let nfa_matrices = nfa.build_lagraph_matrices()?;
 
         let src_id = resolve_endpoint(&query.subject, graph)?;
-        let _dst_id = resolve_endpoint(&query.object, graph)?;
+        let dst_id = resolve_endpoint(&query.object, graph)?;
 
         let n = graph.num_nodes();
 
@@ -258,8 +258,24 @@ impl RpqEvaluator for NfaRpqEvaluator {
 
         let result_vec = GraphblasVector { inner: reachable };
 
+        let filtered_vec = match dst_id {
+            Some(target_idx) => {
+                let target = target_idx as GrB_Index;
+                let is_reachable = result_vec.contains(target)?;
+
+                let mut filtered = unsafe { GraphblasVector::new_bool(n as GrB_Index) }?;
+
+                if is_reachable {
+                    filtered.set_bool(target, true)?;
+                }
+
+                filtered
+            }
+            None => result_vec,
+        };
+
         Ok(NfaRpqResult {
-            reachable: result_vec,
+            reachable: filtered_vec,
         })
     }
 }

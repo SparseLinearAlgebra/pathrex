@@ -71,6 +71,7 @@ fn regenerate_bindings() {
         .allowlist_function("GrB_Vector_new")
         .allowlist_function("GrB_Vector_free")
         .allowlist_function("GrB_Vector_setElement_BOOL")
+        .allowlist_function("GrB_Vector_extractElement_BOOL")
         .allowlist_function("GrB_Vector_nvals")
         .allowlist_function("GrB_Vector_extractTuples_BOOL")
         .allowlist_function("GrB_vxm")
