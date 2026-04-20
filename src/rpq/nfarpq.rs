@@ -5,7 +5,7 @@ use crate::la_ok;
 use crate::lagraph_sys::LAGraph_Kind;
 use crate::lagraph_sys::*;
 use crate::rpq::{Endpoint, PathExpr, RpqError, RpqEvaluator, RpqQuery};
-use rustfst::algorithms::closure::{closure, ClosureType};
+use rustfst::algorithms::closure::{ClosureType, closure};
 use rustfst::algorithms::concat::concat;
 use rustfst::algorithms::rm_epsilon::rm_epsilon;
 use rustfst::algorithms::union::union;

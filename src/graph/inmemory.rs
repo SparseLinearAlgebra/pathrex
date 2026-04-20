@@ -11,8 +11,8 @@ use crate::{
 };
 
 use super::{
-    compute_outer_inner, load_mm_file, Backend, Edge, GraphBuilder, GraphDecomposition, GraphError,
-    LagraphGraph, ThreadScope,
+    Backend, Edge, GraphBuilder, GraphDecomposition, GraphError, LagraphGraph, ThreadScope,
+    compute_outer_inner, load_mm_file,
 };
 
 /// Marker type for the in-memory GraphBLAS-backed backend.
@@ -196,6 +196,13 @@ impl GraphDecomposition for InMemoryGraph {
 
     fn num_nodes(&self) -> usize {
         self.id_to_node.len()
+    }
+}
+
+impl InMemoryGraph {
+    /// Returns the number of distinct edge labels in the graph.
+    pub fn num_labels(&self) -> usize {
+        self.graphs.len()
     }
 }
 
