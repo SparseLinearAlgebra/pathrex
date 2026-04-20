@@ -9,7 +9,7 @@ use crate::{
 };
 
 use super::{
-    Backend, Edge, GraphBuilder, GraphDecomposition, GraphError, LagraphGraph, ensure_grb_init,
+    ensure_grb_init, Backend, Edge, GraphBuilder, GraphDecomposition, GraphError, LagraphGraph,
 };
 
 /// Marker type for the in-memory GraphBLAS-backed backend.
@@ -247,7 +247,8 @@ impl GraphSource<InMemoryBuilder> for Rdf {
         for item in self {
             match item {
                 Ok(edge) => builder.push_edge(edge)?,
-                Err(FormatError::LiteralAsNode) => continue, // Skip literals
+                Err(FormatError::LiteralAsNode) => continue,
+                Err(FormatError::Rdf(_)) => continue,
                 Err(e) => return Err(e.into()),
             }
         }
@@ -344,6 +345,30 @@ mod tests {
     }
 
     #[test]
+    fn test_rdf_skip_bad_syntax_lines() {
+        use crate::formats::rdf::{Rdf, RdfFormat};
+
+        let nt = b"<http://example.org/A> <http://example.org/knows> <http://example.org/B> .\n\
+                   THIS IS NOT VALID RDF SYNTAX .\n\
+                   <http://example.org/B> <http://example.org/knows> <http://example.org/C> .\n";
+
+        let graph = InMemoryBuilder::new()
+            .load(Rdf::new(
+                std::io::Cursor::new(nt.to_vec()),
+                RdfFormat::NTriples,
+            ))
+            .expect("load should succeed despite bad line")
+            .build()
+            .expect("build should succeed");
+
+        assert_eq!(graph.num_nodes(), 3, "A, B, C must all be present");
+        assert!(
+            graph.get_graph("http://example.org/knows").is_ok(),
+            "label matrix must exist"
+        );
+    }
+
+    #[test]
     fn test_with_stream_from_rdf() {
         use crate::formats::rdf::{Rdf, RdfFormat};
 
@@ -352,7 +377,10 @@ mod tests {
                   <http://example.org/A> <http://example.org/likes> <http://example.org/C> .\n";
 
         let graph = InMemoryBuilder::new()
-            .load(Rdf::new(std::io::Cursor::new(nt.to_vec()), RdfFormat::NTriples))
+            .load(Rdf::new(
+                std::io::Cursor::new(nt.to_vec()),
+                RdfFormat::NTriples,
+            ))
             .expect("load should succeed")
             .build()
             .expect("build should succeed");
