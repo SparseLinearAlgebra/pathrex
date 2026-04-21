@@ -4,8 +4,8 @@ pub mod inmemory;
 pub mod wrappers;
 
 pub use inmemory::{InMemory, InMemoryBuilder, InMemoryGraph};
-pub(crate) use wrappers::{compute_outer_inner, ensure_grb_init, ThreadScope};
-pub use wrappers::{load_mm_file, GraphblasMatrix, GraphblasVector, LagraphGraph};
+pub use wrappers::{GraphblasMatrix, GraphblasVector, LagraphGraph, load_mm_file};
+pub(crate) use wrappers::{ThreadScope, compute_outer_inner, ensure_grb_init};
 
 use std::marker::PhantomData;
 use std::sync::Arc;

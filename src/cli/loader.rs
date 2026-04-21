@@ -9,8 +9,8 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process;
 
-use crate::formats::mm::MatrixMarket;
 use crate::formats::Csv;
+use crate::formats::mm::MatrixMarket;
 use crate::graph::{Graph, InMemory, InMemoryGraph};
 use crate::rpq::{RpqError, RpqQuery};
 use crate::sparql::parse_rpq;

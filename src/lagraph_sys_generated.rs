@@ -156,6 +156,9 @@ unsafe extern "C" {
     ) -> GrB_Info;
 }
 unsafe extern "C" {
+    pub fn GrB_Matrix_dup(C: *mut GrB_Matrix, A: GrB_Matrix) -> GrB_Info;
+}
+unsafe extern "C" {
     pub fn GrB_Matrix_nvals(nvals: *mut GrB_Index, A: GrB_Matrix) -> GrB_Info;
 }
 unsafe extern "C" {
@@ -337,4 +340,11 @@ unsafe extern "C" {
 }
 unsafe extern "C" {
     pub fn LAGraph_RPQMatrix_Free(mat: *mut GrB_Matrix) -> GrB_Info;
+}
+unsafe extern "C" {
+    pub fn LAGraph_RPQMatrix_reduce(
+        res: *mut GrB_Index,
+        mat: GrB_Matrix,
+        reduce_type: u8,
+    ) -> GrB_Info;
 }

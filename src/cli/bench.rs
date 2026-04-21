@@ -17,10 +17,11 @@ use super::checkpoint::Checkpoint;
 use super::loader::LoadedQuery;
 use super::output::{AlgoResult, AlgoTiming, BatchResult, QueryResult, TimingStats};
 
-/// Run a single evaluation and return the result count (nnz / reachable nodes).
+/// Run a single evaluation and return the result count.
 ///
 /// Used by both the correctness-check pass before benchmarking and by the
-/// `query` subcommand runner.
+/// `query` subcommand runner. Both algorithms report the number of reachable
+/// target vertices.
 pub(crate) fn run_once(
     algo: &Algo,
     query: &RpqQuery,
@@ -37,7 +38,8 @@ pub(crate) fn run_once(
         }
         Algo::Rpqmatrix => {
             let result = RpqMatrixEvaluator.evaluate(query, graph)?;
-            Ok(result.nnz as usize)
+            let count = result.reachable_target_count().map_err(RpqError::Graph)? as usize;
+            Ok(count)
         }
     }
 }
@@ -98,7 +100,10 @@ fn run_prepared_batch(prepared: &mut PreparedBatch) -> Result<(), RpqError> {
         PreparedBatch::Rpqmatrix(items) => {
             for item in items {
                 let result = item.execute()?;
-                let _ = black_box(result.nnz);
+                let count = result
+                    .reachable_target_count()
+                    .map_err(crate::rpq::RpqError::Graph)? as usize;
+                let _ = black_box(count);
             }
         }
     }
@@ -400,6 +405,9 @@ mod tests {
     use super::*;
     use std::fs;
 
+    use crate::rpq::{Endpoint, PathExpr, RpqQuery};
+    use crate::utils::build_graph;
+
     fn write_estimate_files(base: &Path, bench_name: &str, mean_ns: f64, iterations: usize) {
         let bench_dir = base.join("batch0_nfa").join(bench_name).join("new");
         fs::create_dir_all(&bench_dir).expect("create bench dir");
@@ -428,5 +436,24 @@ mod tests {
         assert_eq!(timing.total.iterations, 3);
         assert_eq!(timing.ffi_only.mean_ns, 4.0);
         assert_eq!(timing.ffi_only.iterations, 5);
+    }
+
+    #[test]
+    fn run_once_rpqmatrix_count_matches_nfa_reachable_targets() {
+        let graph = build_graph(&[("A", "B", "p"), ("C", "B", "p")]);
+        let query = RpqQuery {
+            subject: Endpoint::Variable("x".into()),
+            path: PathExpr::Label("p".into()),
+            object: Endpoint::Variable("y".into()),
+        };
+
+        let rpqmatrix_count = run_once(&Algo::Rpqmatrix, &query, &graph).expect("rpqmatrix count");
+        let nfa_count = run_once(&Algo::Nfa, &query, &graph).expect("nfa count");
+
+        assert_eq!(
+            rpqmatrix_count, 1,
+            "shared count should report reachable target count"
+        );
+        assert_eq!(nfa_count, rpqmatrix_count);
     }
 }

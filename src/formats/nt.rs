@@ -27,8 +27,8 @@
 use std::io::Read;
 
 use oxrdf::{NamedOrBlankNode, Term};
-use oxttl::ntriples::ReaderNTriplesParser;
 use oxttl::NTriplesParser;
+use oxttl::ntriples::ReaderNTriplesParser;
 
 use crate::formats::FormatError;
 use crate::graph::Edge;

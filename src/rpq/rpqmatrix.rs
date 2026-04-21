@@ -9,6 +9,8 @@ use crate::lagraph_sys::*;
 use crate::rpq::{Endpoint, PathExpr, RpqError, RpqEvaluator, RpqQuery};
 use crate::{grb_ok, la_ok};
 
+const RPQMATRIX_REDUCE_BY_COL: u8 = 1;
+
 define_language! {
     pub enum RpqPlan {
         Label(String),
@@ -174,6 +176,20 @@ pub struct RpqMatrixResult {
     pub matrix: GraphblasMatrix,
 }
 
+impl RpqMatrixResult {
+    /// Count distinct reachable target vertices by reducing the path relation
+    /// matrix to its non-empty columns.
+    pub fn reachable_target_count(&self) -> Result<u64, crate::graph::GraphError> {
+        let mut count: GrB_Index = 0;
+        unsafe { grb_ok!(LAGraph_RPQMatrix_reduce(
+            &mut count,
+            self.matrix.inner,
+            RPQMATRIX_REDUCE_BY_COL,
+        ))? };
+        Ok(count as u64)
+    }
+}
+
 pub struct PreparedRpqMatrix {
     plans: Vec<RPQMatrixPlan>,
     owned_matrices: Vec<GrB_Matrix>,
@@ -186,10 +202,10 @@ impl PreparedRpqMatrix {
         let mut nnz: GrB_Index = 0;
         unsafe { la_ok!(LAGraph_RPQMatrix(&mut nnz, root_ptr))? };
 
-        let matrix = unsafe {
-            let mat = (*root_ptr).res_mat;
-            (*root_ptr).res_mat = null_mut();
-            GraphblasMatrix { inner: mat }
+        let mut matrix_inner: GrB_Matrix = null_mut();
+        unsafe { grb_ok!(GrB_Matrix_dup(&mut matrix_inner, (*root_ptr).res_mat))? };
+        let matrix = GraphblasMatrix {
+            inner: matrix_inner,
         };
 
         unsafe { grb_ok!(LAGraph_DestroyRpqMatrixPlan(root_ptr))? };
