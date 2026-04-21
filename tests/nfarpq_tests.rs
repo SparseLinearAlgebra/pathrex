@@ -167,6 +167,26 @@ fn test_sequence_path() {
     assert_eq!(count, 1);
 }
 
+#[test]
+fn prepared_nfa_execution_matches_evaluate() {
+    let graph = build_graph(&[("A", "B", "knows"), ("B", "C", "likes")]);
+    let query = rq(
+        var("x"),
+        PathExpr::Sequence(Box::new(label("knows")), Box::new(label("likes"))),
+        var("y"),
+    );
+
+    let evaluator = NfaRpqEvaluator;
+    let direct = evaluator.evaluate(&query, &graph).expect("direct");
+    let direct_count = direct.reachable.nvals().expect("direct nvals");
+
+    let mut prepared = evaluator.prepare(&query, &graph).expect("prepare");
+    let prepared_result = prepared.execute().expect("prepared execute");
+    let prepared_count = prepared_result.reachable.nvals().expect("prepared nvals");
+
+    assert_eq!(prepared_count, direct_count);
+}
+
 /// Graph: A --knows--> B --likes--> C
 /// Query: <A> <knows>/<likes> ?y
 #[test]

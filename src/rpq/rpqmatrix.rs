@@ -174,21 +174,14 @@ pub struct RpqMatrixResult {
     pub matrix: GraphblasMatrix,
 }
 
-/// RPQ evaluator backed by `LAGraph_RPQMatrix`.
-pub struct RpqMatrixEvaluator;
+pub struct PreparedRpqMatrix {
+    plans: Vec<RPQMatrixPlan>,
+    owned_matrices: Vec<GrB_Matrix>,
+}
 
-impl RpqEvaluator for RpqMatrixEvaluator {
-    type Result = RpqMatrixResult;
-
-    fn evaluate<G: GraphDecomposition>(
-        &self,
-        query: &RpqQuery,
-        graph: &G,
-    ) -> Result<RpqMatrixResult, RpqError> {
-        let expr = query_to_expr(query)?;
-        let (mut plans, owned_matrices) = materialize(&expr, graph)?;
-
-        let root_ptr = unsafe { plans.as_mut_ptr().add(plans.len() - 1) };
+impl PreparedRpqMatrix {
+    pub fn execute(&mut self) -> Result<RpqMatrixResult, RpqError> {
+        let root_ptr = unsafe { self.plans.as_mut_ptr().add(self.plans.len() - 1) };
 
         let mut nnz: GrB_Index = 0;
         unsafe { la_ok!(LAGraph_RPQMatrix(&mut nnz, root_ptr))? };
@@ -201,17 +194,52 @@ impl RpqEvaluator for RpqMatrixEvaluator {
 
         unsafe { grb_ok!(LAGraph_DestroyRpqMatrixPlan(root_ptr))? };
 
-        // Free diagonal matrices created for named vertices.
-        for mut mat in owned_matrices {
-            unsafe {
-                LAGraph_RPQMatrix_Free(&mut mat);
-            }
-        }
-
         Ok(RpqMatrixResult {
             nnz: nnz as u64,
             matrix,
         })
+    }
+}
+
+impl Drop for PreparedRpqMatrix {
+    fn drop(&mut self) {
+        for mat in &mut self.owned_matrices {
+            unsafe {
+                LAGraph_RPQMatrix_Free(mat);
+            }
+        }
+    }
+}
+
+/// RPQ evaluator backed by `LAGraph_RPQMatrix`.
+pub struct RpqMatrixEvaluator;
+
+impl RpqMatrixEvaluator {
+    pub fn prepare<G: GraphDecomposition>(
+        &self,
+        query: &RpqQuery,
+        graph: &G,
+    ) -> Result<PreparedRpqMatrix, RpqError> {
+        let expr = query_to_expr(query)?;
+        let (plans, owned_matrices) = materialize(&expr, graph)?;
+
+        Ok(PreparedRpqMatrix {
+            plans,
+            owned_matrices,
+        })
+    }
+}
+
+impl RpqEvaluator for RpqMatrixEvaluator {
+    type Result = RpqMatrixResult;
+
+    fn evaluate<G: GraphDecomposition>(
+        &self,
+        query: &RpqQuery,
+        graph: &G,
+    ) -> Result<RpqMatrixResult, RpqError> {
+        let mut prepared = self.prepare(query, graph)?;
+        prepared.execute()
     }
 }
 

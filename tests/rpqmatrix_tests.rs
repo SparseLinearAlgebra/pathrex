@@ -172,6 +172,38 @@ fn test_sequence_path() {
     assert_eq!(result.nnz, 1);
 }
 
+#[test]
+fn prepared_rpqmatrix_execution_matches_evaluate() {
+    let graph = build_graph(&[("A", "B", "p"), ("B", "C", "q")]);
+    let query = rq(
+        var("x"),
+        PathExpr::Sequence(Box::new(label("p")), Box::new(label("q"))),
+        var("y"),
+    );
+
+    let direct = RpqMatrixEvaluator.evaluate(&query, &graph).expect("direct");
+    let mut prepared = RpqMatrixEvaluator.prepare(&query, &graph).expect("prepare");
+    let prepared_result = prepared.execute().expect("execute");
+
+    assert_eq!(prepared_result.nnz, direct.nnz);
+}
+
+#[test]
+fn prepared_rpqmatrix_execution_can_run_twice() {
+    let graph = build_graph(&[("A", "B", "p"), ("B", "C", "q")]);
+    let query = rq(
+        var("x"),
+        PathExpr::Sequence(Box::new(label("p")), Box::new(label("q"))),
+        var("y"),
+    );
+
+    let mut prepared = RpqMatrixEvaluator.prepare(&query, &graph).expect("prepare");
+    let first = prepared.execute().expect("first");
+    let second = prepared.execute().expect("second");
+
+    assert_eq!(first.nnz, second.nnz);
+}
+
 /// Graph: A --knows--> B --likes--> C
 /// Query: <A> <knows>/<likes> ?y  → only A→C, nnz=1
 #[test]

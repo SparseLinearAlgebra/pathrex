@@ -5,17 +5,17 @@ use std::fs::File;
 use std::path::Path;
 use std::time::Duration;
 
-use criterion::{black_box, Criterion};
+use criterion::{Criterion, black_box};
 
 use crate::graph::InMemoryGraph;
-use crate::rpq::nfarpq::NfaRpqEvaluator;
-use crate::rpq::rpqmatrix::RpqMatrixEvaluator;
+use crate::rpq::nfarpq::{NfaRpqEvaluator, PreparedNfaRpq};
+use crate::rpq::rpqmatrix::{PreparedRpqMatrix, RpqMatrixEvaluator};
 use crate::rpq::{RpqError, RpqEvaluator, RpqQuery};
 
 use super::args::{Algo, BenchArgs};
 use super::checkpoint::Checkpoint;
 use super::loader::LoadedQuery;
-use super::output::{AlgoResult, BatchResult, QueryResult, TimingStats};
+use super::output::{AlgoResult, AlgoTiming, BatchResult, QueryResult, TimingStats};
 
 /// Run a single evaluation and return the result count (nnz / reachable nodes).
 ///
@@ -46,10 +46,63 @@ pub(crate) fn run_once(
 ///
 /// Used inside criterion's measurement loop; returning counts would be
 /// optimised away anyway, but we keep the call realistic with `black_box`.
-fn run_batch(algo: &Algo, queries: &[&RpqQuery], graph: &InMemoryGraph) -> Result<(), RpqError> {
+fn run_batch_total(
+    algo: &Algo,
+    queries: &[&RpqQuery],
+    graph: &InMemoryGraph,
+) -> Result<(), RpqError> {
     for query in queries {
         let _ = black_box(run_once(algo, query, graph))?;
     }
+    Ok(())
+}
+
+enum PreparedBatch {
+    Nfa(Vec<PreparedNfaRpq>),
+    Rpqmatrix(Vec<PreparedRpqMatrix>),
+}
+
+fn prepare_batch(
+    algo: &Algo,
+    queries: &[&RpqQuery],
+    graph: &InMemoryGraph,
+) -> Result<PreparedBatch, RpqError> {
+    match algo {
+        Algo::Nfa => Ok(PreparedBatch::Nfa(
+            queries
+                .iter()
+                .map(|query| NfaRpqEvaluator.prepare(query, graph))
+                .collect::<Result<Vec<_>, _>>()?,
+        )),
+        Algo::Rpqmatrix => Ok(PreparedBatch::Rpqmatrix(
+            queries
+                .iter()
+                .map(|query| RpqMatrixEvaluator.prepare(query, graph))
+                .collect::<Result<Vec<_>, _>>()?,
+        )),
+    }
+}
+
+fn run_prepared_batch(prepared: &mut PreparedBatch) -> Result<(), RpqError> {
+    match prepared {
+        PreparedBatch::Nfa(items) => {
+            for item in items {
+                let result = item.execute()?;
+                let count = result
+                    .reachable
+                    .nvals()
+                    .map_err(crate::rpq::RpqError::Graph)? as usize;
+                let _ = black_box(count);
+            }
+        }
+        PreparedBatch::Rpqmatrix(items) => {
+            for item in items {
+                let result = item.execute()?;
+                let _ = black_box(result.nnz);
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -94,6 +147,13 @@ fn read_criterion_estimates(
         stddev_ns,
         iterations,
     })
+}
+
+fn read_algo_timing_estimates(criterion_dir: &str, group_name: &str) -> Option<AlgoTiming> {
+    let total = read_criterion_estimates(criterion_dir, group_name, "eval_total")?;
+    let ffi_only = read_criterion_estimates(criterion_dir, group_name, "eval_ffi_only")?;
+
+    Some(AlgoTiming { total, ffi_only })
 }
 
 /// Run the full benchmark loop, processing queries in batches.
@@ -152,8 +212,9 @@ pub fn run_benchmarks(
 
         // ── First pass: correctness check + collect valid queries per algo ──
         let mut per_query_results: Vec<QueryResult> = Vec::new();
-        // algo key → list of (query_ref, result_count)
-        let mut valid_queries_per_algo: HashMap<String, Vec<(&RpqQuery, usize)>> = HashMap::new();
+        // algo key → list of (query_index, query_ref, result_count)
+        let mut valid_queries_per_algo: HashMap<String, Vec<(usize, &RpqQuery, usize)>> =
+            HashMap::new();
 
         for &(idx, loaded) in batch {
             let mut algo_results: HashMap<String, AlgoResult> = HashMap::new();
@@ -195,7 +256,7 @@ pub fn run_benchmarks(
                         valid_queries_per_algo
                             .entry(algo.to_string())
                             .or_default()
-                            .push((query, count));
+                            .push((idx, query, count));
                     }
                     Ok(Err(e)) => {
                         eprintln!(
@@ -226,7 +287,7 @@ pub fn run_benchmarks(
         }
 
         // ── Second pass: criterion benchmark per algo over valid queries ──
-        let mut batch_algo_timing: HashMap<String, Option<TimingStats>> = HashMap::new();
+        let mut batch_algo_timing: HashMap<String, Option<AlgoTiming>> = HashMap::new();
 
         for algo in &args.common.algo {
             let algo_key = algo.to_string();
@@ -247,17 +308,26 @@ pub fn run_benchmarks(
             let mut group = criterion.benchmark_group(&group_name);
 
             let algo_clone = algo.clone();
-            let queries_clone: Vec<RpqQuery> = valid.iter().map(|(q, _)| (*q).clone()).collect();
+            let queries_clone: Vec<RpqQuery> = valid.iter().map(|(_, q, _)| (*q).clone()).collect();
 
-            group.bench_function("eval", |b| {
+            group.bench_function("eval_total", |b| {
                 b.iter(|| {
                     let refs: Vec<&RpqQuery> = queries_clone.iter().collect();
-                    let _ = black_box(run_batch(&algo_clone, &refs, graph));
+                    let _ = black_box(run_batch_total(&algo_clone, &refs, graph));
+                });
+            });
+
+            group.bench_function("eval_ffi_only", |b| {
+                let refs: Vec<&RpqQuery> = queries_clone.iter().collect();
+                let mut prepared =
+                    prepare_batch(&algo_clone, &refs, graph).expect("prepare benchmark batch");
+                b.iter(|| {
+                    let _ = black_box(run_prepared_batch(&mut prepared));
                 });
             });
             group.finish();
 
-            let timing = read_criterion_estimates(&args.criterion_dir, &group_name, "eval");
+            let timing = read_algo_timing_estimates(&args.criterion_dir, &group_name);
             batch_algo_timing.insert(algo_key, timing);
         }
 
@@ -272,28 +342,32 @@ pub fn run_benchmarks(
                 let timing = batch_algo_timing
                     .get(&algo_key)
                     .and_then(|t| t.as_ref())
-                    .map(|t| TimingStats {
-                        mean_ns: t.mean_ns,
-                        median_ns: t.median_ns,
-                        stddev_ns: t.stddev_ns,
-                        iterations: t.iterations,
+                    .map(|t| AlgoTiming {
+                        total: TimingStats {
+                            mean_ns: t.total.mean_ns,
+                            median_ns: t.total.median_ns,
+                            stddev_ns: t.total.stddev_ns,
+                            iterations: t.total.iterations,
+                        },
+                        ffi_only: TimingStats {
+                            mean_ns: t.ffi_only.mean_ns,
+                            median_ns: t.ffi_only.median_ns,
+                            stddev_ns: t.ffi_only.stddev_ns,
+                            iterations: t.ffi_only.iterations,
+                        },
                     });
                 // Attach the result count from the correctness-check pass.
                 let result_count = valid_queries_per_algo.get(&algo_key).and_then(|v| {
                     v.iter()
-                        .find(|(q, _)| {
-                            // Match by pointer identity — the LoadedQuery we kept.
-                            // Safe because we stored references into the same slice.
-                            std::ptr::eq(*q as *const RpqQuery, qr.query_index as *const RpqQuery)
-                        })
-                        .map(|(_, c)| *c)
+                        .find(|(idx, _, _)| *idx == qr.query_index)
+                        .map(|(_, _, c)| *c)
                 });
                 // Fallback: if we can't match by pointer, use the first count from
                 // the batch (acceptable when batch_size == 1, which is the default).
                 let result_count = result_count.or_else(|| {
                     valid_queries_per_algo
                         .get(&algo_key)
-                        .and_then(|v| v.iter().find(|(_, _)| true).map(|(_, c)| *c))
+                        .and_then(|v| v.first().map(|(_, _, c)| *c))
                 });
                 qr.algorithms
                     .insert(algo_key.clone(), AlgoResult::ok(result_count, timing));
@@ -319,4 +393,40 @@ pub fn run_benchmarks(
     }
 
     batch_results
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn write_estimate_files(base: &Path, bench_name: &str, mean_ns: f64, iterations: usize) {
+        let bench_dir = base.join("batch0_nfa").join(bench_name).join("new");
+        fs::create_dir_all(&bench_dir).expect("create bench dir");
+        fs::write(
+            bench_dir.join("estimates.json"),
+            format!(
+                r#"{{"mean":{{"point_estimate":{mean_ns}}},"median":{{"point_estimate":{mean_ns}}},"std_dev":{{"point_estimate":0.0}}}}"#
+            ),
+        )
+        .expect("write estimates");
+        let sample = format!("{{\"iters\":[{}]}}", vec!["1"; iterations].join(","));
+        fs::write(bench_dir.join("sample.json"), sample).expect("write sample");
+    }
+
+    #[test]
+    fn read_split_criterion_estimates() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_estimate_files(dir.path(), "eval_total", 10.0, 3);
+        write_estimate_files(dir.path(), "eval_ffi_only", 4.0, 5);
+
+        let timing =
+            read_algo_timing_estimates(dir.path().to_str().expect("utf8 path"), "batch0_nfa")
+                .expect("split timing");
+
+        assert_eq!(timing.total.mean_ns, 10.0);
+        assert_eq!(timing.total.iterations, 3);
+        assert_eq!(timing.ffi_only.mean_ns, 4.0);
+        assert_eq!(timing.ffi_only.iterations, 5);
+    }
 }

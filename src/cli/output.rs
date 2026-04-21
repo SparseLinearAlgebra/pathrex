@@ -20,12 +20,12 @@ pub struct AlgoResult {
     pub result_count: Option<usize>,
     /// Timing statistics — only present in `bench` mode.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub timing: Option<TimingStats>,
+    pub timing: Option<AlgoTiming>,
 }
 
 impl AlgoResult {
     /// Create a successful result with an optional result count and timing.
-    pub fn ok(result_count: Option<usize>, timing: Option<TimingStats>) -> Self {
+    pub fn ok(result_count: Option<usize>, timing: Option<AlgoTiming>) -> Self {
         Self {
             status: "ok".to_string(),
             error: None,
@@ -53,6 +53,13 @@ impl AlgoResult {
             timing: None,
         }
     }
+}
+
+/// Benchmark timings for one algorithm/result.
+#[derive(Debug, Serialize)]
+pub struct AlgoTiming {
+    pub total: TimingStats,
+    pub ffi_only: TimingStats,
 }
 
 /// Timing statistics extracted from criterion estimates.
@@ -145,5 +152,35 @@ impl BenchOutput {
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
         fs::write(path, json)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn algo_result_serializes_split_timing() {
+        let result = AlgoResult::ok(
+            Some(3),
+            Some(AlgoTiming {
+                total: TimingStats {
+                    mean_ns: 1.0,
+                    median_ns: 1.0,
+                    stddev_ns: 0.0,
+                    iterations: 10,
+                },
+                ffi_only: TimingStats {
+                    mean_ns: 0.5,
+                    median_ns: 0.5,
+                    stddev_ns: 0.0,
+                    iterations: 10,
+                },
+            }),
+        );
+
+        let value = serde_json::to_value(&result).expect("serialize");
+        assert!(value["timing"]["total"].is_object());
+        assert!(value["timing"]["ffi_only"].is_object());
     }
 }
