@@ -176,6 +176,12 @@ pub struct GraphblasVector {
 }
 
 impl GraphblasVector {
+    pub fn new_bool(n: GrB_Index) -> Result<Self, GraphError> {
+        let mut v: GrB_Vector = std::ptr::null_mut();
+        unsafe { grb_ok!(GrB_Vector_new(&mut v, GrB_BOOL, n))? };
+        Ok(Self { inner: v })
+    }
+
     /// Returns the number of stored values in this vector.
     pub fn nvals(&self) -> Result<GrB_Index, GraphError> {
         let mut nvals: GrB_Index = 0;
@@ -206,6 +212,8 @@ impl GraphblasVector {
         indices.truncate(actual_nvals as usize);
         Ok(indices)
     }
+
+
 }
 
 impl Drop for GraphblasVector {

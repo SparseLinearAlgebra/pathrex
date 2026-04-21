@@ -187,6 +187,50 @@ fn prepared_nfa_execution_matches_evaluate() {
     assert_eq!(prepared_count, direct_count);
 }
 
+#[test]
+fn test_bound_object_filters_reachable_targets() {
+    let graph = build_graph(&[("A", "B", "knows"), ("C", "D", "knows")]);
+    let evaluator = NfaRpqEvaluator;
+
+    let result = evaluator
+        .evaluate(&rq(var("x"), label("knows"), named_ep("B")), &graph)
+        .expect("evaluate should succeed");
+
+    let indices = result
+        .reachable
+        .indices()
+        .expect("failed to extract indices");
+    let b_id = graph.get_node_id("B").expect("B should exist") as GrB_Index;
+    let d_id = graph.get_node_id("D").expect("D should exist") as GrB_Index;
+
+    assert_eq!(
+        indices,
+        vec![b_id],
+        "only the bound object should remain reachable"
+    );
+    assert!(
+        !indices.contains(&d_id),
+        "unbound reachable targets must be filtered out"
+    );
+}
+
+#[test]
+fn prepared_nfa_execution_respects_bound_object() {
+    let graph = build_graph(&[("A", "B", "knows"), ("C", "D", "knows")]);
+    let evaluator = NfaRpqEvaluator;
+    let query = rq(var("x"), label("knows"), named_ep("B"));
+
+    let mut prepared = evaluator.prepare(&query, &graph).expect("prepare");
+    let prepared_result = prepared.execute().expect("prepared execute");
+    let prepared_indices = prepared_result
+        .reachable
+        .indices()
+        .expect("prepared indices");
+    let b_id = graph.get_node_id("B").expect("B should exist") as GrB_Index;
+
+    assert_eq!(prepared_indices, vec![b_id]);
+}
+
 /// Graph: A --knows--> B --likes--> C
 /// Query: <A> <knows>/<likes> ?y
 #[test]

@@ -1,10 +1,10 @@
 //! NFA-based RPQ evaluation using `LAGraph_RegularPathQuery`.
 
 use crate::graph::{GraphDecomposition, GraphblasVector, LagraphGraph};
-use crate::la_ok;
 use crate::lagraph_sys::LAGraph_Kind;
 use crate::lagraph_sys::*;
 use crate::rpq::{Endpoint, PathExpr, RpqError, RpqEvaluator, RpqQuery};
+use crate::{grb_ok, la_ok};
 use rustfst::algorithms::closure::{ClosureType, closure};
 use rustfst::algorithms::concat::concat;
 use rustfst::algorithms::rm_epsilon::rm_epsilon;
@@ -215,6 +215,33 @@ pub struct PreparedNfaRpq {
     _data_graphs: Vec<Arc<LagraphGraph>>,
     data_graph_ptrs: Vec<LAGraph_Graph>,
     source_vertices: Vec<GrB_Index>,
+    destination_vertex: Option<usize>,
+    num_nodes: usize,
+}
+
+fn filter_reachable_by_destination(
+    reachable: GraphblasVector,
+    destination_vertex: Option<usize>,
+    num_nodes: usize,
+) -> Result<GraphblasVector, RpqError> {
+    let Some(destination_vertex) = destination_vertex else {
+        return Ok(reachable);
+    };
+
+    let indices = reachable.indices().map_err(RpqError::Graph)?;
+    let filtered = GraphblasVector::new_bool(num_nodes as GrB_Index)?;
+
+    if indices.contains(&(destination_vertex as GrB_Index)) {
+        unsafe {
+            grb_ok!(GrB_Vector_setElement_BOOL(
+                filtered.inner,
+                true,
+                destination_vertex as GrB_Index,
+            ))?
+        };
+    }
+
+    Ok(filtered)
 }
 
 impl PreparedNfaRpq {
@@ -236,9 +263,13 @@ impl PreparedNfaRpq {
             ))?
         };
 
-        Ok(NfaRpqResult {
-            reachable: GraphblasVector { inner: reachable },
-        })
+        let reachable = filter_reachable_by_destination(
+            GraphblasVector { inner: reachable },
+            self.destination_vertex,
+            self.num_nodes,
+        )?;
+
+        Ok(NfaRpqResult { reachable })
     }
 }
 
@@ -281,6 +312,8 @@ impl NfaRpqEvaluator {
             _data_graphs: data_graphs,
             data_graph_ptrs,
             source_vertices,
+            destination_vertex: _dst_id,
+            num_nodes: n,
         })
     }
 }
@@ -294,7 +327,14 @@ impl RpqEvaluator for NfaRpqEvaluator {
         graph: &G,
     ) -> Result<NfaRpqResult, RpqError> {
         let mut prepared = self.prepare(query, graph)?;
-        prepared.execute()
+        let result = prepared.execute()?;
+        let destination_vertex = resolve_endpoint(&query.object, graph)?;
+        let reachable = filter_reachable_by_destination(
+            result.reachable,
+            destination_vertex,
+            graph.num_nodes(),
+        )?;
+        Ok(NfaRpqResult { reachable })
     }
 }
 

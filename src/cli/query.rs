@@ -52,7 +52,7 @@ pub fn run_queries(
             let algo_result = match outcome {
                 Ok(Ok(count)) => {
                     eprintln!(
-                        "[query #{idx}] id={} algo={} — {count} result(s)",
+                        "[query #{idx}] id={} algo={} — {count} count",
                         loaded.id, algo
                     );
                     AlgoResult::ok(Some(count), None)
