@@ -1,0 +1,8 @@
+.git/
+.worktrees/
+target/
+.tmp/
+deps/LAGraph/build/
+bench_criterion/
+bench_results.json
+bench_checkpoint.json
