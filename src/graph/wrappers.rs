@@ -66,11 +66,23 @@ pub struct LagraphGraph {
 }
 
 impl LagraphGraph {
-    pub fn new(mut matrix: GrB_Matrix, kind: LAGraph_Kind) -> Result<Self, GraphError> {
+    /// Build a `LagraphGraph` from an RAII-wrapped [`GraphblasMatrix`].
+    ///
+    /// On success, ownership of the underlying `GrB_Matrix` is transferred
+    /// into the `LAGraph_Graph` and the [`GraphblasMatrix`] guard is forgotten
+    ///
+    /// On failure, the [`GraphblasMatrix`] is dropped normally, freeing the
+    /// matrix.
+    pub fn from_matrix(matrix: GraphblasMatrix, kind: LAGraph_Kind) -> Result<Self, GraphError> {
+        let mut raw = matrix.inner;
         let mut g: LAGraph_Graph = std::ptr::null_mut();
-        unsafe { la_ok!(LAGraph_New(&mut g, &mut matrix, kind,))? };
-
-        Ok(Self { inner: g })
+        match unsafe { la_ok!(LAGraph_New(&mut g, &mut raw, kind)) } {
+            Ok(()) => {
+                std::mem::forget(matrix);
+                Ok(Self { inner: g })
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Build a new `LagraphGraph` from coordinate (COO) format.
@@ -110,19 +122,20 @@ impl LagraphGraph {
         let mut matrix: GrB_Matrix = std::ptr::null_mut();
         unsafe { grb_ok!(GrB_Matrix_new(&mut matrix, GrB_BOOL, n, n))? };
 
-        if let Err(e) = grb_ok!(unsafe { GrB_Matrix_build_BOOL(
-            matrix,
-            rows.as_ptr(),
-            cols.as_ptr(),
-            vals.as_ptr(),
-            nvals,
-            GrB_LOR,
-        ) }) {
-            let _ = unsafe { grb_ok!(GrB_Matrix_free(&mut matrix)) };
-            return Err(e);
-        }
+        let owned = GraphblasMatrix::from_raw(matrix);
 
-        Self::new(matrix, kind)
+        grb_ok!(unsafe {
+            GrB_Matrix_build_BOOL(
+                owned.inner,
+                rows.as_ptr(),
+                cols.as_ptr(),
+                vals.as_ptr(),
+                nvals,
+                GrB_LOR,
+            )
+        })?;
+
+        Self::from_matrix(owned, kind)
     }
 
     pub fn check_graph(&self) -> Result<(), GraphError> {
@@ -158,17 +171,6 @@ pub struct GraphblasVector {
 }
 
 impl GraphblasVector {
-    /// Allocate a new N-element boolean `GrB_Vector`.
-    ///
-    /// # Safety
-    /// Caller must ensure LAGraph/GraphBLAS has been initialised via
-    /// [`ensure_grb_init`].
-    pub fn new_bool(n: GrB_Index) -> Result<Self, GraphError> {
-        let mut v: GrB_Vector = std::ptr::null_mut();
-        unsafe { grb_ok!(GrB_Vector_new(&mut v, GrB_BOOL, n))? };
-        Ok(Self { inner: v })
-    }
-
     /// Returns the number of stored values in this vector.
     pub fn nvals(&self) -> Result<GrB_Index, GraphError> {
         let mut nvals: GrB_Index = 0;
@@ -187,12 +189,14 @@ impl GraphblasVector {
         let mut values = vec![false; nvals as usize];
         let mut actual_nvals = nvals;
 
-        unsafe { grb_ok!(GrB_Vector_extractTuples_BOOL(
-            indices.as_mut_ptr(),
-            values.as_mut_ptr(),
-            &mut actual_nvals,
-            self.inner,
-        ))? };
+        unsafe {
+            grb_ok!(GrB_Vector_extractTuples_BOOL(
+                indices.as_mut_ptr(),
+                values.as_mut_ptr(),
+                &mut actual_nvals,
+                self.inner,
+            ))?
+        };
 
         indices.truncate(actual_nvals as usize);
         Ok(indices)
@@ -213,6 +217,17 @@ unsafe impl Sync for GraphblasVector {}
 #[derive(Debug)]
 pub struct GraphblasMatrix {
     pub inner: GrB_Matrix,
+}
+
+impl GraphblasMatrix {
+    /// Wrap a raw [`GrB_Matrix`] pointer in an RAII guard.
+    ///
+    /// The caller must ensure the pointer is either null or a valid,
+    /// live `GrB_Matrix` that is not shared with any other owner.
+    /// [`Drop`] will call `GrB_Matrix_free` when the guard is dropped.
+    pub fn from_raw(raw: GrB_Matrix) -> Self {
+        Self { inner: raw }
+    }
 }
 
 impl Drop for GraphblasMatrix {

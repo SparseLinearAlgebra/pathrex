@@ -31,12 +31,12 @@ use std::os::fd::IntoRawFd;
 use std::path::{Path, PathBuf};
 
 use crate::formats::FormatError;
-use crate::graph::{GraphError, ensure_grb_init};
+use crate::graph::{ensure_grb_init, GraphError, GraphblasMatrix};
 use crate::la_ok;
-use crate::lagraph_sys::{FILE, GrB_Matrix, LAGraph_MMRead};
+use crate::lagraph_sys::{LAGraph_MMRead, FILE};
 
-/// Read a single MatrixMarket file and return the raw [`GrB_Matrix`].
-pub fn load_mm_file(path: impl AsRef<Path>) -> Result<GrB_Matrix, FormatError> {
+/// Read a single MatrixMarket file and return a RAII-wrapped [`GraphblasMatrix`].
+pub fn load_mm_file(path: impl AsRef<Path>) -> Result<GraphblasMatrix, FormatError> {
     let path = path.as_ref();
 
     ensure_grb_init().map_err(|e| match e {
@@ -60,13 +60,13 @@ pub fn load_mm_file(path: impl AsRef<Path>) -> Result<GrB_Matrix, FormatError> {
         return Err(std::io::Error::last_os_error().into());
     }
 
-    let mut matrix: GrB_Matrix = std::ptr::null_mut();
+    let mut matrix = std::ptr::null_mut();
 
     let err = unsafe { la_ok!(LAGraph_MMRead(&mut matrix, f as *mut FILE)) };
     unsafe { libc::fclose(f) };
 
     match err {
-        Ok(_) => Ok(matrix),
+        Ok(_) => Ok(GraphblasMatrix::from_raw(matrix)),
         Err(GraphError::LAGraph(info, msg)) => Err(FormatError::MatrixMarket {
             code: info,
             message: msg,
@@ -97,9 +97,7 @@ type IndexMap = (HashMap<usize, String>, HashMap<String, usize>);
 /// Parse a `<name> <index>` mapping file.
 ///
 /// Throws error on non-positive or duplicate indicies
-pub(crate) fn parse_index_map(
-    path: &Path,
-) -> Result<IndexMap, FormatError> {
+pub(crate) fn parse_index_map(path: &Path) -> Result<IndexMap, FormatError> {
     let file_name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())

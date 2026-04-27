@@ -7,7 +7,7 @@ use crate::formats::mm::{apply_base_iri, load_mm_file, parse_index_map};
 use crate::formats::{Csv, MatrixMarket, Rdf};
 use crate::{
     graph::GraphSource,
-    lagraph_sys::{GrB_Index, GrB_Matrix_free, LAGraph_Kind},
+    lagraph_sys::{GrB_Index, LAGraph_Kind},
 };
 
 use super::{
@@ -245,16 +245,12 @@ impl GraphSource<InMemoryBuilder> for MatrixMarket {
             .map(
                 |(idx, label)| -> Result<(String, LagraphGraph), GraphError> {
                     let path = mm_dir.join(format!("{}.txt", idx));
-                    let mut matrix = load_mm_file(&path)?;
-                    match LagraphGraph::new(matrix, LAGraph_Kind::LAGraph_ADJACENCY_DIRECTED) {
-                        Ok(lg) => Ok((label, lg)),
-                        Err(e) => {
-                            if !matrix.is_null() {
-                                unsafe { GrB_Matrix_free(&mut matrix) };
-                            }
-                            Err(e)
-                        }
-                    }
+                    let matrix = load_mm_file(&path)?;
+                    let lg = LagraphGraph::from_matrix(
+                        matrix,
+                        LAGraph_Kind::LAGraph_ADJACENCY_DIRECTED,
+                    )?;
+                    Ok((label, lg))
                 },
             )
             .collect::<Result<Vec<_>, GraphError>>()?;
