@@ -4,7 +4,7 @@ use std::ptr::null_mut;
 
 use egg::{Id, RecExpr, define_language};
 
-use crate::graph::{GraphDecomposition, GraphblasMatrix, ensure_grb_init};
+use crate::graph::{GraphDecomposition, GraphblasMatrix};
 use crate::lagraph_sys::*;
 use crate::rpq::{Endpoint, PathExpr, RpqError, RpqEvaluator, RpqQuery};
 use crate::{grb_ok, la_ok};
@@ -119,7 +119,10 @@ pub fn materialize<G: GraphDecomposition>(
                     .ok_or_else(|| RpqError::VertexNotFound(name.clone()))?
                     as GrB_Index;
                 let mut mat: GrB_Matrix = null_mut();
-                unsafe { grb_ok!(LAGraph_RPQMatrix_label(&mut mat, vertex_id, n, n,))? };
+                unsafe {
+                    crate::graph::ensure_grb_init()?;
+                    grb_ok!(LAGraph_RPQMatrix_label(&mut mat, vertex_id, n, n,))?
+                };
                 if mat.is_null() {
                     return Err(RpqError::Graph(crate::graph::GraphError::GraphBlas(
                         GrB_Info::GrB_INVALID_VALUE,
@@ -182,8 +185,6 @@ impl RpqEvaluator for RpqMatrixEvaluator {
         query: &RpqQuery,
         graph: &G,
     ) -> Result<RpqMatrixResult, RpqError> {
-        ensure_grb_init()?;
-
         let expr = query_to_expr(query)?;
         let (mut plans, owned_matrices) = materialize(&expr, graph)?;
 

@@ -24,56 +24,12 @@
 //! ```
 
 use std::collections::HashMap;
-use std::ffi::CString;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::os::fd::IntoRawFd;
 use std::path::{Path, PathBuf};
 
 use crate::formats::FormatError;
-use crate::graph::{ensure_grb_init, GraphError, GraphblasMatrix};
-use crate::la_ok;
-use crate::lagraph_sys::{LAGraph_MMRead, FILE};
-
-/// Read a single MatrixMarket file and return a RAII-wrapped [`GraphblasMatrix`].
-pub fn load_mm_file(path: impl AsRef<Path>) -> Result<GraphblasMatrix, FormatError> {
-    let path = path.as_ref();
-
-    ensure_grb_init().map_err(|e| match e {
-        GraphError::LAGraph(info, msg) => FormatError::MatrixMarket {
-            code: info,
-            message: msg,
-        },
-        _ => FormatError::MatrixMarket {
-            code: crate::lagraph_sys::GrB_Info::GrB_PANIC,
-            message: "Failed to initialize GraphBLAS".to_string(),
-        },
-    })?;
-
-    let file = File::open(path)?;
-    let fd = file.into_raw_fd();
-
-    let c_mode = CString::new("r").unwrap();
-    let f = unsafe { libc::fdopen(fd, c_mode.as_ptr()) };
-    if f.is_null() {
-        unsafe { libc::close(fd) };
-        return Err(std::io::Error::last_os_error().into());
-    }
-
-    let mut matrix = std::ptr::null_mut();
-
-    let err = unsafe { la_ok!(LAGraph_MMRead(&mut matrix, f as *mut FILE)) };
-    unsafe { libc::fclose(f) };
-
-    match err {
-        Ok(_) => Ok(GraphblasMatrix::from_raw(matrix)),
-        Err(GraphError::LAGraph(info, msg)) => Err(FormatError::MatrixMarket {
-            code: info,
-            message: msg,
-        }),
-        _ => unreachable!("should be either mm read error or ok"),
-    }
-}
+pub use crate::graph::load_mm_file;
 
 // Trims first "<" and last ">".
 fn normalize_map_name(name: &str) -> String {
@@ -278,10 +234,12 @@ mod tests {
 
     #[test]
     fn test_load_nonexistent_mm_file_returns_io_error() {
+        use crate::formats::FormatError;
+        use crate::graph::GraphError;
         let result = load_mm_file("/nonexistent/path/to/file.txt");
         assert!(
-            matches!(result, Err(FormatError::Io(_))),
-            "expected Io error for missing file, got: {:?}",
+            matches!(result, Err(GraphError::Format(FormatError::Io(_)))),
+            "expected Format(Io) error for missing file, got: {:?}",
             result
         );
     }

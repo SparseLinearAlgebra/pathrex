@@ -1,5 +1,14 @@
 //! RAII wrappers and init helpers for GraphBLAS and LAGraph C handles.
+//!
+//! GraphBLAS initialisation is performed lazily inside the RAII-wrapped constructors
+//! here (`LagraphGraph::from_coo`, `LagraphGraph::from_matrix`) and inside
+//! `ThreadScope::enter`. Consumers of these wrappers — including format loaders,
+//! builders, and RPQ evaluators — do not need (and should not) call init themselves.
 
+use std::ffi::CString;
+use std::fs::File;
+use std::os::fd::IntoRawFd;
+use std::path::Path;
 use std::sync::Once;
 
 use crate::{grb_ok, la_ok, lagraph_sys::*};
@@ -8,7 +17,7 @@ use super::GraphError;
 
 static GRB_INIT: Once = Once::new();
 
-pub fn ensure_grb_init() -> Result<(), GraphError> {
+pub(crate) fn ensure_grb_init() -> Result<(), GraphError> {
     let mut result = Ok(());
     GRB_INIT.call_once(|| {
         result = unsafe { la_ok!(LAGraph_Init()) };
@@ -74,6 +83,7 @@ impl LagraphGraph {
     /// On failure, the [`GraphblasMatrix`] is dropped normally, freeing the
     /// matrix.
     pub fn from_matrix(matrix: GraphblasMatrix, kind: LAGraph_Kind) -> Result<Self, GraphError> {
+        ensure_grb_init()?;
         let mut raw = matrix.inner;
         let mut g: LAGraph_Graph = std::ptr::null_mut();
         match unsafe { la_ok!(LAGraph_New(&mut g, &mut raw, kind)) } {
@@ -97,18 +107,12 @@ impl LagraphGraph {
     /// - `n`: Number of nodes
     /// - `kind`: Graph kind (e.g., `LAGraph_ADJACENCY_DIRECTED`)
     ///
-    /// # Safety
-    /// Caller must ensure LAGraph/GraphBLAS has been initialised via
-    /// [`ensure_grb_init`].
-    ///
     /// # Example
     /// ```ignore
     /// let rows = vec![0, 1, 2];
     /// let cols = vec![1, 2, 0];
     /// let vals = vec![true, true, true];
-    /// let graph = unsafe {
-    ///     LagraphGraph::from_coo(&rows, &cols, &vals, 3, LAGraph_ADJACENCY_DIRECTED)
-    /// }?;
+    /// let graph = LagraphGraph::from_coo(&rows, &cols, &vals, 3, LAGraph_ADJACENCY_DIRECTED)?;
     /// ```
     pub fn from_coo(
         rows: &[GrB_Index],
@@ -117,6 +121,7 @@ impl LagraphGraph {
         n: GrB_Index,
         kind: LAGraph_Kind,
     ) -> Result<Self, GraphError> {
+        ensure_grb_init()?;
         let nvals = rows.len() as GrB_Index;
 
         let mut matrix: GrB_Matrix = std::ptr::null_mut();
@@ -240,3 +245,31 @@ impl Drop for GraphblasMatrix {
 
 unsafe impl Send for GraphblasMatrix {}
 unsafe impl Sync for GraphblasMatrix {}
+
+/// Read a single MatrixMarket file and return a RAII-wrapped [`GraphblasMatrix`].
+///
+/// Initialises GraphBLAS on first call. The file must be in MatrixMarket
+/// coordinate format as produced by LAGraph.
+pub fn load_mm_file(path: impl AsRef<Path>) -> Result<GraphblasMatrix, GraphError> {
+    ensure_grb_init()?;
+
+    let file = File::open(path.as_ref())
+        .map_err(|e| GraphError::Format(crate::formats::FormatError::Io(e)))?;
+    let fd = file.into_raw_fd();
+
+    let c_mode = CString::new("r").unwrap();
+    let f = unsafe { libc::fdopen(fd, c_mode.as_ptr()) };
+    if f.is_null() {
+        unsafe { libc::close(fd) };
+        return Err(GraphError::Format(crate::formats::FormatError::Io(
+            std::io::Error::last_os_error(),
+        )));
+    }
+
+    let mut matrix = std::ptr::null_mut();
+    let err = unsafe { la_ok!(LAGraph_MMRead(&mut matrix, f as *mut FILE)) };
+    unsafe { libc::fclose(f) };
+    err?;
+
+    Ok(GraphblasMatrix::from_raw(matrix))
+}

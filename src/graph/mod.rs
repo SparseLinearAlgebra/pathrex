@@ -4,8 +4,8 @@ pub mod inmemory;
 pub mod wrappers;
 
 pub use inmemory::{InMemory, InMemoryBuilder, InMemoryGraph};
-pub use wrappers::{GraphblasMatrix, GraphblasVector, LagraphGraph, ensure_grb_init};
-pub(crate) use wrappers::{ThreadScope, compute_outer_inner};
+pub(crate) use wrappers::{compute_outer_inner, ensure_grb_init, ThreadScope};
+pub use wrappers::{load_mm_file, GraphblasMatrix, GraphblasVector, LagraphGraph};
 
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -24,13 +24,13 @@ pub enum GraphError {
     #[error("GraphBLAS error: info code {0}; msg: {1}")]
     LAGraph(GrB_Info, String),
 
+    /// GraphBLAS/LAGraph initialisation failed.
+    #[error("LAGraph initialization failed")]
+    InitFailed,
+
     /// [`GraphDecomposition::get_graph`] was called with an unknown label.
     #[error("Label not found: '{0}'")]
     LabelNotFound(String),
-
-    /// [`ensure_grb_init`] was called but `LAGraph_Init` returned a failure code.
-    #[error("LAGraph initialization failed")]
-    InitFailed,
 
     /// A format-layer error propagated through [`GraphBuilder::load`].
     #[error("Format error: {0}")]

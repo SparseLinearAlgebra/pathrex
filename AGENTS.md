@@ -434,7 +434,10 @@ LAGraph. Safe Rust wrappers live in [`graph::mod`](src/graph/mod.rs):
 - [`GraphblasVector`](src/graph/mod.rs:128) — RAII wrapper around `GrB_Vector`
   (derives `Debug`).
 - [`GraphblasMatrix`](src/graph/mod.rs) — RAII wrapper around `GrB_Matrix` (`dup` + `free` on drop).
-- [`ensure_grb_init()`](src/graph/mod.rs:39) — one-time `LAGraph_Init` via `std::sync::Once`.
+- [`ensure_grb_init()`](src/graph/wrappers.rs:11) — internal one-time `LAGraph_Init` via
+  `std::sync::Once`. Called automatically by RAII-wrapped constructors
+  (`LagraphGraph::from_coo`, `LagraphGraph::from_matrix`, `ThreadScope::enter`) and by
+  `load_mm_file`. Crate-private; no other code should call it.
 
 ### Macros & helpers (`src/utils.rs`)
 

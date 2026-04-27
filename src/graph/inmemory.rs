@@ -3,7 +3,7 @@ use std::{collections::HashMap, io::Read};
 
 use rayon::prelude::*;
 
-use crate::formats::mm::{apply_base_iri, load_mm_file, parse_index_map};
+use crate::formats::mm::{apply_base_iri, parse_index_map};
 use crate::formats::{Csv, MatrixMarket, Rdf};
 use crate::{
     graph::GraphSource,
@@ -11,8 +11,8 @@ use crate::{
 };
 
 use super::{
-    Backend, Edge, GraphBuilder, GraphDecomposition, GraphError, LagraphGraph, ThreadScope,
-    compute_outer_inner, ensure_grb_init,
+    compute_outer_inner, load_mm_file, Backend, Edge, GraphBuilder, GraphDecomposition, GraphError,
+    LagraphGraph, ThreadScope,
 };
 
 /// Marker type for the in-memory GraphBLAS-backed backend.
@@ -118,8 +118,6 @@ impl GraphBuilder for InMemoryBuilder {
     type Error = GraphError;
 
     fn build(self) -> Result<InMemoryGraph, GraphError> {
-        ensure_grb_init()?;
-
         let n: GrB_Index = self
             .id_to_node
             .keys()
@@ -235,7 +233,6 @@ impl GraphSource<InMemoryBuilder> for MatrixMarket {
 
         builder.set_node_map(vert_by_idx, vert_by_name);
 
-        ensure_grb_init()?;
         let (outer, inner) = compute_outer_inner(edge_by_idx.len());
         let _scope = ThreadScope::enter(outer, inner)?;
 
