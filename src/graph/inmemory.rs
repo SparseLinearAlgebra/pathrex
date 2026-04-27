@@ -11,8 +11,8 @@ use crate::{
 };
 
 use super::{
-    compute_outer_inner, ensure_grb_init, Backend, Edge, GraphBuilder, GraphDecomposition,
-    GraphError, LagraphGraph, ThreadScope,
+    Backend, Edge, GraphBuilder, GraphDecomposition, GraphError, LagraphGraph, ThreadScope,
+    compute_outer_inner, ensure_grb_init,
 };
 
 /// Marker type for the in-memory GraphBLAS-backed backend.
@@ -145,10 +145,8 @@ impl GraphBuilder for InMemoryBuilder {
             .into_par_iter()
             .map(
                 |(label, pairs)| -> Result<(String, LagraphGraph), GraphError> {
-                    let rows: Vec<GrB_Index> =
-                        pairs.iter().map(|(r, _)| *r as GrB_Index).collect();
-                    let cols: Vec<GrB_Index> =
-                        pairs.iter().map(|(_, c)| *c as GrB_Index).collect();
+                    let rows: Vec<GrB_Index> = pairs.iter().map(|(r, _)| *r as GrB_Index).collect();
+                    let cols: Vec<GrB_Index> = pairs.iter().map(|(_, c)| *c as GrB_Index).collect();
                     let vals: Vec<bool> = vec![true; pairs.len()];
 
                     let lg = LagraphGraph::from_coo(

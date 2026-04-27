@@ -2,8 +2,8 @@
 
 use crate::graph::{GraphDecomposition, GraphblasVector, LagraphGraph, ensure_grb_init};
 use crate::la_ok;
-use crate::lagraph_sys::*;
 use crate::lagraph_sys::LAGraph_Kind;
+use crate::lagraph_sys::*;
 use crate::rpq::{Endpoint, PathExpr, RpqError, RpqEvaluator, RpqQuery};
 use rustfst::algorithms::closure::{ClosureType, closure};
 use rustfst::algorithms::concat::concat;

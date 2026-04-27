@@ -26,7 +26,8 @@ enum RdfData {
     Owned(Vec<u8>),
 }
 
-impl Deref for RdfData { type Target = [u8];
+impl Deref for RdfData {
+    type Target = [u8];
 
     fn deref(&self) -> &[u8] {
         match self {

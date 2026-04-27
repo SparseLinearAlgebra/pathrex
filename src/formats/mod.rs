@@ -26,7 +26,6 @@ pub use csv::Csv;
 pub use mm::MatrixMarket;
 pub use rdf::{Rdf, RdfFormat};
 
-
 use oxttl::TurtleSyntaxError;
 use thiserror::Error;
 

@@ -90,8 +90,7 @@ fn run_la_n_egg_case(case_name: &str) {
 
         let actual_nnz = result.reachable.nvals().expect("failed to get nvals");
         assert_eq!(
-            actual_nnz,
-            *expected_nnz,
+            actual_nnz, *expected_nnz,
             "case '{case_name}' query #{i} nnz mismatch\n  query:    {query:?}\n  expected: {expected_nnz}\n  actual:   {actual_nnz}",
         );
     }
@@ -143,7 +142,10 @@ fn test_single_label_named_source() {
         .evaluate(&rq(named_ep("A"), label("knows"), var("y")), &graph)
         .expect("evaluate should succeed");
 
-    let indices = result.reachable.indices().expect("failed to extract indices");
+    let indices = result
+        .reachable
+        .indices()
+        .expect("failed to extract indices");
     let b_id = graph.get_node_id("B").expect("B should exist");
     assert!(
         indices.contains(&(b_id as GrB_Index)),
@@ -181,7 +183,10 @@ fn test_sequence_path_named_source() {
         .evaluate(&rq(named_ep("A"), path, var("y")), &graph)
         .expect("evaluate should succeed");
 
-    let indices = result.reachable.indices().expect("failed to extract indices");
+    let indices = result
+        .reachable
+        .indices()
+        .expect("failed to extract indices");
     let c_id = graph.get_node_id("C").expect("C should exist");
     assert!(
         indices.contains(&(c_id as GrB_Index)),
@@ -202,7 +207,10 @@ fn test_alternative_path() {
         .evaluate(&rq(named_ep("A"), path, var("y")), &graph)
         .expect("evaluate should succeed");
 
-    let indices = result.reachable.indices().expect("failed to extract indices");
+    let indices = result
+        .reachable
+        .indices()
+        .expect("failed to extract indices");
     let b_id = graph.get_node_id("B").expect("B should exist");
     let c_id = graph.get_node_id("C").expect("C should exist");
     assert!(
@@ -228,7 +236,10 @@ fn test_zero_or_more_path() {
         .evaluate(&rq(named_ep("A"), path, var("y")), &graph)
         .expect("evaluate should succeed");
 
-    let indices = result.reachable.indices().expect("failed to extract indices");
+    let indices = result
+        .reachable
+        .indices()
+        .expect("failed to extract indices");
     let a_id = graph.get_node_id("A").expect("A should exist");
     let b_id = graph.get_node_id("B").expect("B should exist");
     let c_id = graph.get_node_id("C").expect("C should exist");
@@ -260,7 +271,10 @@ fn test_one_or_more_path() {
         .evaluate(&rq(named_ep("A"), path, var("y")), &graph)
         .expect("evaluate should succeed");
 
-    let indices = result.reachable.indices().expect("failed to extract indices");
+    let indices = result
+        .reachable
+        .indices()
+        .expect("failed to extract indices");
     let a_id = graph.get_node_id("A").expect("A should exist");
     let b_id = graph.get_node_id("B").expect("B should exist");
     let c_id = graph.get_node_id("C").expect("C should exist");
@@ -292,7 +306,10 @@ fn test_zero_or_one_path() {
         .evaluate(&rq(named_ep("A"), path, var("y")), &graph)
         .expect("evaluate should succeed");
 
-    let indices = result.reachable.indices().expect("failed to extract indices");
+    let indices = result
+        .reachable
+        .indices()
+        .expect("failed to extract indices");
     let a_id = graph.get_node_id("A").expect("A should exist");
     let b_id = graph.get_node_id("B").expect("B should exist");
     let c_id = graph.get_node_id("C").expect("C should exist");
@@ -402,7 +419,10 @@ fn test_complex_path() {
         .evaluate(&rq(named_ep("A"), path, var("y")), &graph)
         .expect("evaluate should succeed");
 
-    let indices = result.reachable.indices().expect("failed to extract indices");
+    let indices = result
+        .reachable
+        .indices()
+        .expect("failed to extract indices");
     let d_id = graph.get_node_id("D").expect("D should exist");
     assert!(
         indices.contains(&(d_id as GrB_Index)),
