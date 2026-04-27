@@ -11,7 +11,7 @@ static GRB_INIT: Once = Once::new();
 pub fn ensure_grb_init() -> Result<(), GraphError> {
     let mut result = Ok(());
     GRB_INIT.call_once(|| {
-        result = la_ok!(LAGraph_Init());
+        result = unsafe { la_ok!(LAGraph_Init()) };
     });
     result
 }
@@ -44,7 +44,7 @@ pub(crate) struct ThreadScope {
 impl ThreadScope {
     pub(crate) fn enter(outer: i32, inner: i32) -> Result<Self, GraphError> {
         ensure_grb_init()?;
-        la_ok!(LAGraph_SetNumThreads(outer, inner))?;
+        unsafe { la_ok!(LAGraph_SetNumThreads(outer, inner))? };
         Ok(Self { _private: () })
     }
 }
@@ -54,7 +54,7 @@ impl Drop for ThreadScope {
         let cores = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1) as i32;
-        if let Err(e) = la_ok!(LAGraph_SetNumThreads(1, cores)) {
+        if let Err(e) = unsafe { la_ok!(LAGraph_SetNumThreads(1, cores)) } {
             eprintln!("ThreadScope: failed to restore thread counts: {e}");
         }
     }
@@ -68,9 +68,9 @@ pub struct LagraphGraph {
 impl LagraphGraph {
     pub fn new(mut matrix: GrB_Matrix, kind: LAGraph_Kind) -> Result<Self, GraphError> {
         let mut g: LAGraph_Graph = std::ptr::null_mut();
-        la_ok!(LAGraph_New(&mut g, &mut matrix, kind,))?;
+        unsafe { la_ok!(LAGraph_New(&mut g, &mut matrix, kind,))? };
 
-        return Ok(Self { inner: g });
+        Ok(Self { inner: g })
     }
 
     /// Build a new `LagraphGraph` from coordinate (COO) format.
@@ -108,17 +108,17 @@ impl LagraphGraph {
         let nvals = rows.len() as GrB_Index;
 
         let mut matrix: GrB_Matrix = std::ptr::null_mut();
-        grb_ok!(GrB_Matrix_new(&mut matrix, GrB_BOOL, n, n))?;
+        unsafe { grb_ok!(GrB_Matrix_new(&mut matrix, GrB_BOOL, n, n))? };
 
-        if let Err(e) = grb_ok!(GrB_Matrix_build_BOOL(
+        if let Err(e) = grb_ok!(unsafe { GrB_Matrix_build_BOOL(
             matrix,
             rows.as_ptr(),
             cols.as_ptr(),
             vals.as_ptr(),
             nvals,
             GrB_LOR,
-        )) {
-            let _ = grb_ok!(GrB_Matrix_free(&mut matrix));
+        ) }) {
+            let _ = unsafe { grb_ok!(GrB_Matrix_free(&mut matrix)) };
             return Err(e);
         }
 
@@ -126,7 +126,7 @@ impl LagraphGraph {
     }
 
     pub fn check_graph(&self) -> Result<(), GraphError> {
-        la_ok!(LAGraph_CheckGraph(self.inner))
+        unsafe { la_ok!(LAGraph_CheckGraph(self.inner)) }
     }
 
     /// Number of stored (non-zero) values in the underlying adjacency matrix.
@@ -136,7 +136,7 @@ impl LagraphGraph {
         }
         let matrix: GrB_Matrix = unsafe { (*self.inner).A };
         let mut nvals: GrB_Index = 0;
-        grb_ok!(GrB_Matrix_nvals(&mut nvals, matrix))?;
+        unsafe { grb_ok!(GrB_Matrix_nvals(&mut nvals, matrix))? };
         Ok(nvals)
     }
 }
@@ -144,7 +144,7 @@ impl LagraphGraph {
 impl Drop for LagraphGraph {
     fn drop(&mut self) {
         if !self.inner.is_null() {
-            let _ = la_ok!(LAGraph_Delete(&mut self.inner));
+            let _ = unsafe { la_ok!(LAGraph_Delete(&mut self.inner)) };
         }
     }
 }
@@ -163,16 +163,16 @@ impl GraphblasVector {
     /// # Safety
     /// Caller must ensure LAGraph/GraphBLAS has been initialised via
     /// [`ensure_grb_init`].
-    pub unsafe fn new_bool(n: GrB_Index) -> Result<Self, GraphError> {
+    pub fn new_bool(n: GrB_Index) -> Result<Self, GraphError> {
         let mut v: GrB_Vector = std::ptr::null_mut();
-        grb_ok!(GrB_Vector_new(&mut v, GrB_BOOL, n))?;
+        unsafe { grb_ok!(GrB_Vector_new(&mut v, GrB_BOOL, n))? };
         Ok(Self { inner: v })
     }
 
     /// Returns the number of stored values in this vector.
     pub fn nvals(&self) -> Result<GrB_Index, GraphError> {
         let mut nvals: GrB_Index = 0;
-        grb_ok!(GrB_Vector_nvals(&mut nvals, self.inner))?;
+        unsafe { grb_ok!(GrB_Vector_nvals(&mut nvals, self.inner))? };
         Ok(nvals)
     }
 
@@ -187,12 +187,12 @@ impl GraphblasVector {
         let mut values = vec![false; nvals as usize];
         let mut actual_nvals = nvals;
 
-        grb_ok!(GrB_Vector_extractTuples_BOOL(
+        unsafe { grb_ok!(GrB_Vector_extractTuples_BOOL(
             indices.as_mut_ptr(),
             values.as_mut_ptr(),
             &mut actual_nvals,
             self.inner,
-        ))?;
+        ))? };
 
         indices.truncate(actual_nvals as usize);
         Ok(indices)
@@ -202,7 +202,7 @@ impl GraphblasVector {
 impl Drop for GraphblasVector {
     fn drop(&mut self) {
         if !self.inner.is_null() {
-            let _ = grb_ok!(GrB_Vector_free(&mut self.inner));
+            let _ = unsafe { grb_ok!(GrB_Vector_free(&mut self.inner)) };
         }
     }
 }
@@ -218,7 +218,7 @@ pub struct GraphblasMatrix {
 impl Drop for GraphblasMatrix {
     fn drop(&mut self) {
         if !self.inner.is_null() {
-            let _ = grb_ok!(GrB_Matrix_free(&mut self.inner));
+            let _ = unsafe { grb_ok!(GrB_Matrix_free(&mut self.inner)) };
         }
     }
 }

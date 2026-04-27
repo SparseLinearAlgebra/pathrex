@@ -267,11 +267,8 @@ impl GraphSource<InMemoryBuilder> for MatrixMarket {
 
 impl GraphSource<InMemoryBuilder> for Rdf {
     fn apply_to(self, mut builder: InMemoryBuilder) -> Result<InMemoryBuilder, GraphError> {
-        for result in self.parse() {
-            match result {
-                Ok(edge) => builder.push_edge(edge)?,
-                Err(_) => {}
-            }
+        for edge in self.parse().flatten() {
+            builder.push_edge(edge)?;
         }
         Ok(builder)
     }

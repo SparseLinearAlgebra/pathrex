@@ -243,7 +243,7 @@ impl RpqEvaluator for NfaRpqEvaluator {
 
         let mut reachable: GrB_Vector = std::ptr::null_mut();
 
-        la_ok!(LAGraph_RegularPathQuery(
+        unsafe { la_ok!(LAGraph_RegularPathQuery(
             &mut reachable,
             nfa_graph_ptrs.as_mut_ptr(),
             nfa_matrices.len(),
@@ -254,7 +254,7 @@ impl RpqEvaluator for NfaRpqEvaluator {
             data_graph_ptrs.as_mut_ptr(),
             source_vertices.as_ptr(),
             source_vertices.len(),
-        ))?;
+        ))? };
 
         let result_vec = GraphblasVector { inner: reachable };
 

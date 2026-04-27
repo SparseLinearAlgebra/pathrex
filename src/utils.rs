@@ -135,7 +135,7 @@ impl From<i32> for GrB_Info {
 #[macro_export]
 macro_rules! grb_ok {
     ($grb_func:expr) => {
-        unsafe {
+        {
             let info: $crate::lagraph_sys::GrB_Info = $grb_func.into();
             if info == $crate::lagraph_sys::GrB_Info::GrB_SUCCESS {
                 Ok(())
@@ -163,7 +163,7 @@ macro_rules! grb_ok {
 /// ```
 #[macro_export]
 macro_rules! la_ok {
-    ( $($func:ident)::+ ( $($arg:expr),* $(,)? ) ) => { unsafe {
+    ( $($func:ident)::+ ( $($arg:expr),* $(,)? ) ) => { {
         let mut msg = [0i8; $crate::lagraph_sys::LAGRAPH_MSG_LEN as usize];
         let info: $crate::lagraph_sys::GrB_Info =
             $($func)::+($($arg,)* msg.as_mut_ptr()).into();
@@ -193,7 +193,7 @@ pub fn build_graph(edges: &[(&str, &str, &str)]) -> <InMemory as Backend>::Graph
         })
         .collect::<Vec<Result<Edge, GraphError>>>();
     builder
-        .with_stream(edges.into_iter())
+        .with_stream(edges)
         .expect("Should insert edges stream")
         .build()
         .expect("build must succeed")

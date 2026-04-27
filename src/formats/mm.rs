@@ -62,7 +62,7 @@ pub fn load_mm_file(path: impl AsRef<Path>) -> Result<GrB_Matrix, FormatError> {
 
     let mut matrix: GrB_Matrix = std::ptr::null_mut();
 
-    let err = la_ok!(LAGraph_MMRead(&mut matrix, f as *mut FILE));
+    let err = unsafe { la_ok!(LAGraph_MMRead(&mut matrix, f as *mut FILE)) };
     unsafe { libc::fclose(f) };
 
     match err {
@@ -92,12 +92,14 @@ pub(crate) fn apply_base_iri(name: String, base: Option<&str>) -> String {
     }
 }
 
+type IndexMap = (HashMap<usize, String>, HashMap<String, usize>);
+
 /// Parse a `<name> <index>` mapping file.
 ///
 /// Throws error on non-positive or duplicate indicies
 pub(crate) fn parse_index_map(
     path: &Path,
-) -> Result<(HashMap<usize, String>, HashMap<String, usize>), FormatError> {
+) -> Result<IndexMap, FormatError> {
     let file_name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())

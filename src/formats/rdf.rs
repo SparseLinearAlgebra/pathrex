@@ -151,7 +151,7 @@ fn object_to_node_id(object: Term) -> Result<String, FormatError> {
 
 /// Convert a parsed [`Triple`] into an [`Edge`].
 pub(crate) fn triple_to_edge(triple: Triple) -> Result<Edge, FormatError> {
-    let source = subject_to_node_id(triple.subject.into());
+    let source = subject_to_node_id(triple.subject);
     let label = triple.predicate.as_str().to_owned();
     let target = object_to_node_id(triple.object)?;
     Ok(Edge {
