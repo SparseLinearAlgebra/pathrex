@@ -5,7 +5,7 @@ use std::fs::File;
 use std::path::Path;
 use std::time::Duration;
 
-use criterion::{Criterion, black_box};
+use criterion::{black_box, Criterion};
 
 use crate::graph::InMemoryGraph;
 use crate::rpq::nfarpq::{NfaRpqEvaluator, PreparedNfaRpq};
@@ -19,9 +19,7 @@ use super::output::{AlgoResult, AlgoTiming, BatchResult, QueryResult, TimingStat
 
 /// Run a single evaluation and return the result count.
 ///
-/// Used by both the correctness-check pass before benchmarking and by the
-/// `query` subcommand runner. Both algorithms report the number of reachable
-/// target vertices.
+/// Used by the `query` subcommand runner.
 pub(crate) fn run_once(
     algo: &Algo,
     query: &RpqQuery,
@@ -215,11 +213,10 @@ pub fn run_benchmarks(
             batch_index, batch_indices, batch_ids
         );
 
-        // ── First pass: correctness check + collect valid queries per algo ──
+        // Separate parse errors from valid queries.
         let mut per_query_results: Vec<QueryResult> = Vec::new();
-        // algo key → list of (query_index, query_ref, result_count)
-        let mut valid_queries_per_algo: HashMap<String, Vec<(usize, &RpqQuery, usize)>> =
-            HashMap::new();
+        // algo key → list of (query_index, query_ref)
+        let mut valid_queries_per_algo: HashMap<String, Vec<(usize, &RpqQuery)>> = HashMap::new();
 
         for &(idx, loaded) in batch {
             let mut algo_results: HashMap<String, AlgoResult> = HashMap::new();
@@ -248,38 +245,11 @@ pub fn run_benchmarks(
             };
 
             for algo in &args.common.algo {
-                if checkpoint.is_algo_done(idx, algo) {
-                    continue;
-                }
-
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    run_once(algo, query, graph)
-                }));
-
-                match result {
-                    Ok(Ok(count)) => {
-                        valid_queries_per_algo
-                            .entry(algo.to_string())
-                            .or_default()
-                            .push((idx, query, count));
-                    }
-                    Ok(Err(e)) => {
-                        eprintln!(
-                            "  [error] query #{} (id={}) algo={}: {}",
-                            idx, loaded.id, algo, e
-                        );
-                        algo_results.insert(algo.to_string(), AlgoResult::error(e.to_string()));
-                        checkpoint.mark_algo_done(idx, &loaded.id, algo);
-                    }
-                    Err(panic_info) => {
-                        let msg = format!("{:?}", panic_info);
-                        eprintln!(
-                            "  [panic] query #{} (id={}) algo={}: {}",
-                            idx, loaded.id, algo, msg
-                        );
-                        algo_results.insert(algo.to_string(), AlgoResult::panic(msg));
-                        checkpoint.mark_algo_done(idx, &loaded.id, algo);
-                    }
+                if !checkpoint.is_algo_done(idx, algo) {
+                    valid_queries_per_algo
+                        .entry(algo.to_string())
+                        .or_default()
+                        .push((idx, query));
                 }
             }
 
@@ -291,7 +261,7 @@ pub fn run_benchmarks(
             });
         }
 
-        // ── Second pass: criterion benchmark per algo over valid queries ──
+        // ── Criterion benchmark per algo over valid queries ──
         let mut batch_algo_timing: HashMap<String, Option<AlgoTiming>> = HashMap::new();
 
         for algo in &args.common.algo {
@@ -313,7 +283,7 @@ pub fn run_benchmarks(
             let mut group = criterion.benchmark_group(&group_name);
 
             let algo_clone = algo.clone();
-            let queries_clone: Vec<RpqQuery> = valid.iter().map(|(_, q, _)| (*q).clone()).collect();
+            let queries_clone: Vec<RpqQuery> = valid.iter().map(|(_, q)| (*q).clone()).collect();
 
             group.bench_function("eval_total", |b| {
                 b.iter(|| {
@@ -336,11 +306,11 @@ pub fn run_benchmarks(
             batch_algo_timing.insert(algo_key, timing);
         }
 
-        // Assign timing + result counts to each query's algo result.
+        // Assign timing to each query's algo result.
         for qr in &mut per_query_results {
             for algo in &args.common.algo {
                 let algo_key = algo.to_string();
-                // Only fill in queries that didn't already get an error/panic result.
+                // Only fill in queries that didn't already get a parse error result.
                 if qr.algorithms.contains_key(&algo_key) {
                     continue;
                 }
@@ -361,21 +331,8 @@ pub fn run_benchmarks(
                             iterations: t.ffi_only.iterations,
                         },
                     });
-                // Attach the result count from the correctness-check pass.
-                let result_count = valid_queries_per_algo.get(&algo_key).and_then(|v| {
-                    v.iter()
-                        .find(|(idx, _, _)| *idx == qr.query_index)
-                        .map(|(_, _, c)| *c)
-                });
-                // Fallback: if we can't match by pointer, use the first count from
-                // the batch (acceptable when batch_size == 1, which is the default).
-                let result_count = result_count.or_else(|| {
-                    valid_queries_per_algo
-                        .get(&algo_key)
-                        .and_then(|v| v.first().map(|(_, _, c)| *c))
-                });
                 qr.algorithms
-                    .insert(algo_key.clone(), AlgoResult::ok(result_count, timing));
+                    .insert(algo_key.clone(), AlgoResult::ok(None, timing));
             }
         }
 
