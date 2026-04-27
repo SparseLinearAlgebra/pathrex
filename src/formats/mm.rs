@@ -189,7 +189,7 @@ impl MatrixMarket {
         self
     }
 
-    pub(crate) fn mm_path(&self, idx: usize) -> PathBuf {
+    pub fn mm_path(&self, idx: usize) -> PathBuf {
         self.dir.join(format!("{}.txt", idx))
     }
 }

@@ -82,6 +82,8 @@ fn regenerate_bindings() {
         .allowlist_function("LAGraph_CheckGraph")
         .allowlist_function("LAGraph_Init")
         .allowlist_function("LAGraph_Finalize")
+        .allowlist_function("LAGraph_SetNumThreads")
+        .allowlist_function("LAGraph_GetNumThreads")
         .allowlist_function("LAGraph_New")
         .allowlist_function("LAGraph_Delete")
         .allowlist_function("LAGraph_Cached_AT")

@@ -262,10 +262,9 @@ Each triple `(subject, predicate, object)` becomes an [`Edge`](src/graph/mod.rs:
   literal yield `Err(FormatError::LiteralAsNode)` (callers may filter these out).
 - `label` — full predicate IRI string (including fragment `#…` when present).
 
-Constructors:
+Constructor:
 
-- [`Rdf::new(reader, format)`](src/formats/rdf.rs) — creates a parser with explicit format.
-- [`Rdf::from_path(path)`](src/formats/rdf.rs) — auto-detects format from file extension (`.nt` → N-Triples, `.ttl` → Turtle).
+- [`Rdf::from_path(path)`](src/formats/rdf.rs) — auto-detects format from file extension (`.nt` → N-Triples, `.ttl` → Turtle). Parses in parallel using memory-mapping and rayon.
 
 Format detection via [`RdfFormat::from_path(path)`](src/formats/rdf.rs):
 
@@ -277,14 +276,8 @@ Format detection via [`RdfFormat::from_path(path)`](src/formats/rdf.rs):
 Example usage:
 
 ```rust
-use pathrex::formats::{Rdf, RdfFormat};
+use pathrex::formats::Rdf;
 use pathrex::graph::{Graph, InMemory};
-use std::fs::File;
-
-// Explicit format
-let graph = Graph::<InMemory>::try_from(
-    Rdf::new(File::open("data.ttl")?, RdfFormat::Turtle)
-)?;
 
 // Auto-detect from extension
 let graph = Graph::<InMemory>::try_from(

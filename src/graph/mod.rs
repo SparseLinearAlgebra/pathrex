@@ -44,6 +44,50 @@ pub fn ensure_grb_init() -> Result<(), GraphError> {
     result
 }
 
+/// Compute a balanced `(outer, inner)` split for LAGraph's two-level threading.
+///
+/// `outer` is the number of user-level concurrent tasks (rayon workers);
+/// `inner` is the number of GraphBLAS/OpenMP threads per task. The product is
+/// kept close to `available_parallelism()` so the OS scheduler does not
+/// thrash.
+pub(crate) fn compute_outer_inner(num_tasks: usize) -> (i32, i32) {
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    let tasks = num_tasks.max(1);
+    let outer = tasks.min(cores).max(1);
+    let inner = (cores / outer).max(1);
+    (outer as i32, inner as i32)
+}
+
+/// RAII guard that temporarily sets LAGraph's `(outer, inner)` thread counts.
+///
+/// On entry calls `LAGraph_SetNumThreads(outer, inner)`. On drop restores
+/// `(1, available_parallelism())` so subsequent callers
+/// keep full GraphBLAS parallelism.
+pub(crate) struct ThreadScope {
+    _private: (),
+}
+
+impl ThreadScope {
+    pub(crate) fn enter(outer: i32, inner: i32) -> Result<Self, GraphError> {
+        ensure_grb_init()?;
+        la_ok!(LAGraph_SetNumThreads(outer, inner))?;
+        Ok(Self { _private: () })
+    }
+}
+
+impl Drop for ThreadScope {
+    fn drop(&mut self) {
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1) as i32;
+        if let Err(e) = la_ok!(LAGraph_SetNumThreads(1, cores)) {
+            eprintln!("ThreadScope: failed to restore thread counts: {e}");
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct LagraphGraph {
     pub(crate) inner: LAGraph_Graph,
@@ -111,6 +155,17 @@ impl LagraphGraph {
 
     pub fn check_graph(&self) -> Result<(), GraphError> {
         la_ok!(LAGraph_CheckGraph(self.inner))
+    }
+
+    /// Number of stored (non-zero) values in the underlying adjacency matrix.
+    pub fn nvals(&self) -> Result<GrB_Index, GraphError> {
+        if self.inner.is_null() {
+            return Ok(0);
+        }
+        let matrix: GrB_Matrix = unsafe { (*self.inner).A };
+        let mut nvals: GrB_Index = 0;
+        grb_ok!(GrB_Matrix_nvals(&mut nvals, matrix))?;
+        Ok(nvals)
     }
 }
 
@@ -320,6 +375,32 @@ mod tests {
             .build()
             .unwrap();
         assert_eq!(output.num_nodes(), 3);
+    }
+
+    #[test]
+    fn test_compute_outer_inner_product_bounded_by_cores() {
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        for num_tasks in [0usize, 1, 2, 4, 8, 16, 64, 1024] {
+            let (outer, inner) = compute_outer_inner(num_tasks);
+            assert!(outer >= 1, "outer must be >= 1 for num_tasks={num_tasks}");
+            assert!(inner >= 1, "inner must be >= 1 for num_tasks={num_tasks}");
+            let product = (outer as usize) * (inner as usize);
+            assert!(
+                product <= cores.max(1),
+                "outer*inner ({outer}*{inner}={product}) must not exceed cores ({cores}) for num_tasks={num_tasks}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_compute_outer_inner_caps_outer_at_tasks() {
+        // With a very small number of tasks, outer should never exceed that.
+        let (outer, _inner) = compute_outer_inner(1);
+        assert_eq!(outer, 1);
+        let (outer, _inner) = compute_outer_inner(2);
+        assert!(outer <= 2);
     }
 
     #[test]

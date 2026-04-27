@@ -1,15 +1,18 @@
 use std::sync::Arc;
 use std::{collections::HashMap, io::Read};
 
+use rayon::prelude::*;
+
 use crate::formats::mm::{apply_base_iri, load_mm_file, parse_index_map};
-use crate::formats::{Csv, FormatError, MatrixMarket, Rdf};
+use crate::formats::{Csv, MatrixMarket, Rdf};
 use crate::{
     graph::GraphSource,
-    lagraph_sys::{GrB_Index, GrB_Matrix, GrB_Matrix_free, LAGraph_Kind},
+    lagraph_sys::{GrB_Index, GrB_Matrix_free, LAGraph_Kind},
 };
 
 use super::{
-    ensure_grb_init, Backend, Edge, GraphBuilder, GraphDecomposition, GraphError, LagraphGraph,
+    compute_outer_inner, ensure_grb_init, Backend, Edge, GraphBuilder, GraphDecomposition,
+    GraphError, LagraphGraph, ThreadScope,
 };
 
 /// Marker type for the in-memory GraphBLAS-backed backend.
@@ -101,26 +104,12 @@ impl InMemoryBuilder {
         Ok(self)
     }
 
-    /// Accept a pre-built [`GrB_Matrix`] for `label`, wrapping it in an
-    /// [`LAGraph_Graph`] immediately.
-    pub fn push_grb_matrix(
+    /// Bulk-install pre-wrapped `(label, LagraphGraph)` pairs into `prebuilt`.
+    pub(crate) fn extend_prebuilt<I: IntoIterator<Item = (String, LagraphGraph)>>(
         &mut self,
-        label: impl Into<String>,
-        mut matrix: GrB_Matrix,
-    ) -> Result<(), GraphError> {
-        ensure_grb_init()?;
-        let lg: LagraphGraph =
-            match LagraphGraph::new(matrix, LAGraph_Kind::LAGraph_ADJACENCY_DIRECTED) {
-                Ok(g) => g,
-                Err(e) => {
-                    if !matrix.is_null() {
-                        unsafe { GrB_Matrix_free(&mut matrix) };
-                    }
-                    return Err(e);
-                }
-            };
-        self.prebuilt.insert(label.into(), lg);
-        Ok(())
+        iter: I,
+    ) {
+        self.prebuilt.extend(iter);
     }
 }
 
@@ -146,20 +135,36 @@ impl GraphBuilder for InMemoryBuilder {
             graphs.insert(label, Arc::new(lg));
         }
 
-        for (label, pairs) in &self.label_buffers {
-            let rows: Vec<GrB_Index> = pairs.iter().map(|(r, _)| *r as GrB_Index).collect();
-            let cols: Vec<GrB_Index> = pairs.iter().map(|(_, c)| *c as GrB_Index).collect();
-            let vals: Vec<bool> = vec![true; pairs.len()];
+        let label_buffers: Vec<(String, Vec<(usize, usize)>)> =
+            self.label_buffers.into_iter().collect();
 
-            let lg = LagraphGraph::from_coo(
-                &rows,
-                &cols,
-                &vals,
-                n,
-                LAGraph_Kind::LAGraph_ADJACENCY_DIRECTED,
-            )?;
+        let (outer, inner) = compute_outer_inner(label_buffers.len());
+        let _scope = ThreadScope::enter(outer, inner)?;
 
-            graphs.insert(label.clone(), Arc::new(lg));
+        let built: Vec<(String, LagraphGraph)> = label_buffers
+            .into_par_iter()
+            .map(
+                |(label, pairs)| -> Result<(String, LagraphGraph), GraphError> {
+                    let rows: Vec<GrB_Index> =
+                        pairs.iter().map(|(r, _)| *r as GrB_Index).collect();
+                    let cols: Vec<GrB_Index> =
+                        pairs.iter().map(|(_, c)| *c as GrB_Index).collect();
+                    let vals: Vec<bool> = vec![true; pairs.len()];
+
+                    let lg = LagraphGraph::from_coo(
+                        &rows,
+                        &cols,
+                        &vals,
+                        n,
+                        LAGraph_Kind::LAGraph_ADJACENCY_DIRECTED,
+                    )?;
+                    Ok((label, lg))
+                },
+            )
+            .collect::<Result<Vec<_>, GraphError>>()?;
+
+        for (label, lg) in built {
+            graphs.insert(label, Arc::new(lg));
         }
 
         Ok(InMemoryGraph {
@@ -225,18 +230,38 @@ impl GraphSource<InMemoryBuilder> for MatrixMarket {
             .collect();
 
         let (edge_by_idx, _) = parse_index_map(&self.dir.join("edges.txt"))?;
-        let edge_by_idx: HashMap<usize, String> = edge_by_idx
+        let edge_by_idx: Vec<(usize, String)> = edge_by_idx
             .into_iter()
             .map(|(i, label)| (i, apply_base_iri(label, base)))
             .collect();
 
         builder.set_node_map(vert_by_idx, vert_by_name);
 
-        for (idx, label) in edge_by_idx {
-            let path = self.mm_path(idx);
-            let matrix = load_mm_file(&path)?;
-            builder.push_grb_matrix(label, matrix)?;
-        }
+        ensure_grb_init()?;
+        let (outer, inner) = compute_outer_inner(edge_by_idx.len());
+        let _scope = ThreadScope::enter(outer, inner)?;
+
+        let mm_dir = self.dir.clone();
+        let loaded: Vec<(String, LagraphGraph)> = edge_by_idx
+            .into_par_iter()
+            .map(
+                |(idx, label)| -> Result<(String, LagraphGraph), GraphError> {
+                    let path = mm_dir.join(format!("{}.txt", idx));
+                    let mut matrix = load_mm_file(&path)?;
+                    match LagraphGraph::new(matrix, LAGraph_Kind::LAGraph_ADJACENCY_DIRECTED) {
+                        Ok(lg) => Ok((label, lg)),
+                        Err(e) => {
+                            if !matrix.is_null() {
+                                unsafe { GrB_Matrix_free(&mut matrix) };
+                            }
+                            Err(e)
+                        }
+                    }
+                },
+            )
+            .collect::<Result<Vec<_>, GraphError>>()?;
+
+        builder.extend_prebuilt(loaded);
 
         Ok(builder)
     }
