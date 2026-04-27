@@ -5,7 +5,7 @@ use std::fs::File;
 use std::path::Path;
 use std::time::Duration;
 
-use criterion::{black_box, Criterion};
+use criterion::{Criterion, black_box};
 
 use crate::graph::InMemoryGraph;
 use crate::rpq::nfarpq::{NfaRpqEvaluator, PreparedNfaRpq};
