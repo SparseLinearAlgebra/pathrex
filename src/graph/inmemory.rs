@@ -244,12 +244,10 @@ impl GraphSource<InMemoryBuilder> for MatrixMarket {
 
 impl GraphSource<InMemoryBuilder> for Rdf {
     fn apply_to(self, mut builder: InMemoryBuilder) -> Result<InMemoryBuilder, GraphError> {
-        for item in self {
-            match item {
+        for result in self.parse() {
+            match result {
                 Ok(edge) => builder.push_edge(edge)?,
-                Err(FormatError::LiteralAsNode) => continue,
-                Err(FormatError::Rdf(_)) => continue,
-                Err(e) => return Err(e.into()),
+                Err(_) => {}
             }
         }
         Ok(builder)
@@ -353,10 +351,7 @@ mod tests {
                    <http://example.org/B> <http://example.org/knows> <http://example.org/C> .\n";
 
         let graph = InMemoryBuilder::new()
-            .load(Rdf::new(
-                std::io::Cursor::new(nt.to_vec()),
-                RdfFormat::NTriples,
-            ))
+            .load(Rdf::new(nt.as_ref(), RdfFormat::NTriples))
             .expect("load should succeed despite bad line")
             .build()
             .expect("build should succeed");
@@ -377,10 +372,7 @@ mod tests {
                   <http://example.org/A> <http://example.org/likes> <http://example.org/C> .\n";
 
         let graph = InMemoryBuilder::new()
-            .load(Rdf::new(
-                std::io::Cursor::new(nt.to_vec()),
-                RdfFormat::NTriples,
-            ))
+            .load(Rdf::new(nt.as_ref(), RdfFormat::NTriples))
             .expect("load should succeed")
             .build()
             .expect("build should succeed");
