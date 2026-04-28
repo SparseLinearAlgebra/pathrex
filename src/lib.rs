@@ -1,3 +1,4 @@
+pub mod eval;
 pub mod formats;
 pub mod graph;
 pub mod rpq;

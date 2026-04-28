@@ -7,7 +7,7 @@ use pathrex::formats::mm::MatrixMarket;
 use pathrex::graph::{Graph, GraphDecomposition, GraphError, InMemory, InMemoryGraph};
 use pathrex::lagraph_sys::GrB_Index;
 use pathrex::rpq::nfarpq::NfaRpqEvaluator;
-use pathrex::rpq::{Endpoint, PathExpr, RpqError, RpqEvaluator, RpqQuery};
+use pathrex::rpq::{Endpoint, PathExpr, PreparedRpq, RpqError, RpqEvaluator, RpqQuery};
 use pathrex::sparql::parse_rpq;
 use pathrex::utils::build_graph;
 

@@ -4,9 +4,10 @@ use std::ptr::null_mut;
 
 use egg::{Id, RecExpr, define_language};
 
-use crate::graph::{GraphDecomposition, GraphblasMatrix};
+use crate::eval::{Evaluator, PreparedEvaluator, ResultCount};
+use crate::graph::{GraphDecomposition, GraphError, GraphblasMatrix};
 use crate::lagraph_sys::*;
-use crate::rpq::{Endpoint, PathExpr, RpqError, RpqEvaluator, RpqQuery};
+use crate::rpq::{Endpoint, PathExpr, RpqError, RpqQuery};
 use crate::{grb_ok, la_ok};
 
 const RPQMATRIX_REDUCE_BY_COL: u8 = 1;
@@ -181,12 +182,20 @@ impl RpqMatrixResult {
     /// matrix to its non-empty columns.
     pub fn reachable_target_count(&self) -> Result<u64, crate::graph::GraphError> {
         let mut count: GrB_Index = 0;
-        unsafe { grb_ok!(LAGraph_RPQMatrix_reduce(
-            &mut count,
-            self.matrix.inner,
-            RPQMATRIX_REDUCE_BY_COL,
-        ))? };
+        unsafe {
+            grb_ok!(LAGraph_RPQMatrix_reduce(
+                &mut count,
+                self.matrix.inner,
+                RPQMATRIX_REDUCE_BY_COL,
+            ))?
+        };
         Ok(count as u64)
+    }
+}
+
+impl ResultCount for RpqMatrixResult {
+    fn result_count(&self) -> Result<usize, GraphError> {
+        Ok(self.reachable_target_count()? as usize)
     }
 }
 
@@ -195,8 +204,11 @@ pub struct PreparedRpqMatrix {
     owned_matrices: Vec<GrB_Matrix>,
 }
 
-impl PreparedRpqMatrix {
-    pub fn execute(&mut self) -> Result<RpqMatrixResult, RpqError> {
+impl PreparedEvaluator for PreparedRpqMatrix {
+    type Result = RpqMatrixResult;
+    type Error = RpqError;
+
+    fn execute(&mut self) -> Result<RpqMatrixResult, RpqError> {
         let root_ptr = unsafe { self.plans.as_mut_ptr().add(self.plans.len() - 1) };
 
         let mut nnz: GrB_Index = 0;
@@ -228,10 +240,16 @@ impl Drop for PreparedRpqMatrix {
 }
 
 /// RPQ evaluator backed by `LAGraph_RPQMatrix`.
+#[derive(Clone, Copy)]
 pub struct RpqMatrixEvaluator;
 
-impl RpqMatrixEvaluator {
-    pub fn prepare<G: GraphDecomposition>(
+impl Evaluator for RpqMatrixEvaluator {
+    type Query = RpqQuery;
+    type Result = RpqMatrixResult;
+    type Error = RpqError;
+    type Prepared = PreparedRpqMatrix;
+
+    fn prepare<G: GraphDecomposition>(
         &self,
         query: &RpqQuery,
         graph: &G,
@@ -243,19 +261,6 @@ impl RpqMatrixEvaluator {
             plans,
             owned_matrices,
         })
-    }
-}
-
-impl RpqEvaluator for RpqMatrixEvaluator {
-    type Result = RpqMatrixResult;
-
-    fn evaluate<G: GraphDecomposition>(
-        &self,
-        query: &RpqQuery,
-        graph: &G,
-    ) -> Result<RpqMatrixResult, RpqError> {
-        let mut prepared = self.prepare(query, graph)?;
-        prepared.execute()
     }
 }
 

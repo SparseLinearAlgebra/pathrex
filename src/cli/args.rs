@@ -7,8 +7,9 @@
 //! - [`BenchArgs`] — bench-specific args (criterion, checkpoint, …)
 //! - [`QueryArgs`] — query-specific args (optional output file)
 //! - [`Algo`] — algorithm identifier enum
+//! - [`GraphFormat`] — input graph format enum
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 /// Top-level CLI for pathrex.
 #[derive(Parser, Debug)]
@@ -37,20 +38,29 @@ pub struct CommonArgs {
     #[arg(short = 'g', long)]
     pub graph: String,
 
-    /// Graph format: mm | csv
-    #[arg(short = 'f', long, default_value = "mm")]
-    pub format: String,
+    /// Graph format.
+    #[arg(short = 'f', long, value_enum, default_value_t = GraphFormat::Mm)]
+    pub format: GraphFormat,
 
     /// Path to queries file (format: `<id>,<sparql_pattern>` per line).
     #[arg(short = 'q', long)]
     pub queries: String,
 
-    /// Base IRI used when wrapping bare SPARQL patterns.
-    #[arg(short = 'b', long, default_value = "http://example.org/")]
-    pub base_iri: String,
+    /// Optional base IRI prepended to bare SPARQL patterns as `BASE <iri>`.
+    /// Pass without a value (`--base-iri`) to use the default `http://example.org/`.
+    /// Pass with a value (`--base-iri <iri>`) to use a custom IRI.
+    /// When omitted entirely, no BASE declaration is added to the query.
+    #[arg(
+        short = 'b',
+        long,
+        num_args = 0..=1,
+        default_missing_value = "http://example.org/",
+        require_equals = false
+    )]
+    pub base_iri: Option<String>,
 
     /// Algorithms to use.
-    #[arg(short = 'a', long, num_args = 1.., default_values_t = vec![Algo::Nfa, Algo::Rpqmatrix])]
+    #[arg(short = 'a', long, value_enum, num_args = 1.., required = true)]
     pub algo: Vec<Algo>,
 }
 
@@ -83,11 +93,6 @@ pub struct BenchArgs {
     #[arg(long)]
     pub resume: bool,
 
-    /// Number of queries per batch. Controls how often results are logged
-    /// and checkpoints are saved. Default is 1 (checkpoint after every query).
-    #[arg(long, default_value_t = 1)]
-    pub batch_size: usize,
-
     /// Directory for criterion output.
     #[arg(long, default_value = "bench_criterion/")]
     pub criterion_dir: String,
@@ -109,12 +114,12 @@ pub struct BenchArgs {
     pub measurement: u64,
 }
 
-/// Algorithm identifiers for RPQ evaluation.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, ValueEnum, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[value(rename_all = "lowercase")]
 pub enum Algo {
     /// NFA-based evaluator (`LAGraph_RegularPathQuery`).
-    Nfa,
+    NfaRpq,
     /// Matrix-plan evaluator (`LAGraph_RPQMatrix`).
     Rpqmatrix,
 }
@@ -122,22 +127,47 @@ pub enum Algo {
 impl std::fmt::Display for Algo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Algo::Nfa => write!(f, "nfa"),
+            Algo::NfaRpq => write!(f, "nfarpq"),
             Algo::Rpqmatrix => write!(f, "rpqmatrix"),
         }
     }
 }
 
-impl std::str::FromStr for Algo {
-    type Err = String;
+/// Input graph format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "lowercase")]
+pub enum GraphFormat {
+    /// MatrixMarket directory layout (vertices.txt, edges.txt, *.txt).
+    Mm,
+    /// CSV file with source/target/label columns.
+    Csv,
+}
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "nfa" => Ok(Algo::Nfa),
-            "rpqmatrix" => Ok(Algo::Rpqmatrix),
-            other => Err(format!(
-                "unknown algorithm: '{other}' (expected: nfa, rpqmatrix)"
-            )),
+impl std::fmt::Display for GraphFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GraphFormat::Mm => write!(f, "mm"),
+            GraphFormat::Csv => write!(f, "csv"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn query_requires_at_least_one_algo() {
+        let result = Cli::try_parse_from([
+            "pathrex",
+            "query",
+            "--graph",
+            "graph",
+            "--queries",
+            "queries",
+        ]);
+
+        assert!(result.is_err());
     }
 }

@@ -10,6 +10,7 @@
 pub mod args;
 pub mod bench;
 pub mod checkpoint;
+pub mod dispatch;
 pub mod loader;
 pub mod output;
 pub mod query;

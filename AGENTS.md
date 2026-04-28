@@ -14,7 +14,7 @@ pathrex/
 ├── Cargo.toml                  # Crate manifest (edition 2024)
 ├── build.rs                    # Links LAGraph + LAGraphX; optionally regenerates FFI bindings
 ├── src/
-│   ├── lib.rs                  # Modules: formats, graph, rpq, sparql, utils, lagraph_sys
+│   ├── lib.rs                  # Modules: eval, formats, graph, rpq, sparql, utils, lagraph_sys
 │   ├── main.rs                 # Binary entry point (placeholder)
 │   ├── lagraph_sys.rs          # FFI module — includes generated bindings
 │   ├── lagraph_sys_generated.rs# Bindgen output (checked in, regenerated in CI)
@@ -24,8 +24,10 @@ pathrex/
 │   │   ├── mod.rs              # Core traits (GraphBuilder, GraphDecomposition, GraphSource,
 │   │   │                       #   Backend, Graph<B>), error types, RAII wrappers, GrB init
 │   │   └── inmemory.rs         # InMemory marker, InMemoryBuilder, InMemoryGraph
+│   ├── eval/
+│   │   └── mod.rs              # Evaluator, PreparedEvaluator, ResultCount traits
 │   ├── rpq/
-│   │   ├── mod.rs              # RpqEvaluator (assoc. Result), RpqQuery, Endpoint, PathExpr, RpqError
+│   │   ├── mod.rs              # RPQ query types, RpqError, RPQ marker subtraits
 │   │   ├── nfarpq.rs           # NfaRpqEvaluator (LAGraph_RegularPathQuery)
 │   │   └── rpqmatrix.rs        # Matrix-plan RPQ evaluator
 │   ├── sparql/
@@ -187,6 +189,18 @@ pub trait Backend {
 - [`get_node_id(string_id)`](src/graph/mod.rs:200) / [`get_node_name(mapped_id)`](src/graph/mod.rs:203) — bidirectional string ↔ integer dictionary.
 - [`num_nodes()`](src/graph/mod.rs:204) — total unique nodes.
 
+### Generic evaluator abstraction (`src/eval/`)
+
+[`src/eval/mod.rs`](src/eval/mod.rs) defines query-language-agnostic evaluator traits:
+
+- [`Evaluator`](src/eval/mod.rs) uses associated types for `Query`, `Result`, `Error`, and
+  `Prepared`. The graph backend stays a method-level generic (`G: GraphDecomposition`) so one
+  evaluator type can run against any graph backend selected at the call site.
+- [`PreparedEvaluator`](src/eval/mod.rs) represents prepared `(query, graph)` state that can be
+  executed repeatedly, which is used by benchmark timing loops.
+- [`ResultCount`](src/eval/mod.rs) is separate from `Evaluator::Result`; only CLI runners that
+  need counts require this bound, leaving room for future evaluators with richer result types.
+
 ### InMemoryBuilder / InMemoryGraph
 
 [`InMemoryBuilder`](src/graph/inmemory.rs:36) is the primary `GraphBuilder` implementation.
@@ -331,10 +345,11 @@ Key public items:
 - [`RpqQuery`](src/rpq/mod.rs) — `{ subject, path, object }` using the types above;
   [`strip_base(&mut self, base)`](src/rpq/mod.rs) removes a shared IRI prefix from
   named endpoints and labels.
-- [`RpqEvaluator`](src/rpq/mod.rs) — trait with associated type `Result` and
-  [`evaluate(query, graph)`](src/rpq/mod.rs) taking `&RpqQuery` and
-  [`GraphDecomposition`], returning `Result<Self::Result, RpqError>`.
-  Each concrete evaluator exposes its own output type (see below).
+- [`RpqEvaluator`](src/rpq/mod.rs) — marker subtrait over
+  [`Evaluator<Query = RpqQuery, Error = RpqError>`](src/eval/mod.rs), preserving the RPQ-facing
+  trait name while the generic evaluator hierarchy lives in `src/eval/`.
+- [`PreparedRpq`](src/rpq/mod.rs) — marker subtrait over
+  [`PreparedEvaluator<Error = RpqError>`](src/eval/mod.rs).
 - [`RpqError`](src/rpq/mod.rs) — unified error type for RPQ parsing and evaluation:
   `Parse` (SPARQL syntax), `Extract` (query extraction), `UnsupportedPath`,
   `VertexNotFound`, and `Graph` (wraps [`GraphError`](src/graph/mod.rs) for
@@ -378,10 +393,11 @@ Key public items:
 - [`RpqQuery`](src/rpq/mod.rs) — `{ subject, path, object }` using the types above;
   [`strip_base(&mut self, base)`](src/rpq/mod.rs) removes a shared IRI prefix from
   named endpoints and labels.
-- [`RpqEvaluator`](src/rpq/mod.rs) — trait with associated type `Result` and
-  [`evaluate(query, graph)`](src/rpq/mod.rs) taking `&RpqQuery` and
-  [`GraphDecomposition`], returning `Result<Self::Result, RpqError>`.
-  Each concrete evaluator exposes its own output type (see below).
+- [`RpqEvaluator`](src/rpq/mod.rs) — marker subtrait over
+  [`Evaluator<Query = RpqQuery, Error = RpqError>`](src/eval/mod.rs), preserving the RPQ-facing
+  trait name while the generic evaluator hierarchy lives in `src/eval/`.
+- [`PreparedRpq`](src/rpq/mod.rs) — marker subtrait over
+  [`PreparedEvaluator<Error = RpqError>`](src/eval/mod.rs).
 - [`RpqError`](src/rpq/mod.rs) — unified error type for RPQ parsing and evaluation:
   `Parse` (SPARQL syntax), `Extract` (query extraction), `UnsupportedPath`,
   `VertexNotFound`, and `Graph` (wraps [`GraphError`](src/graph/mod.rs) for
@@ -422,6 +438,18 @@ over label adjacency matrices and runs [`LAGraph_RPQMatrix`]. It returns
 [`GraphblasMatrix`] duplicate of the result matrix (full reachability relation for the path).
 Subject/object do not filter the matrix; a named subject is only validated to exist.
 Bound objects are not supported yet ([`RpqError::UnsupportedPath`]).
+
+### CLI dispatch (`src/cli/dispatch.rs`)
+
+With the `bench` feature enabled, [`src/cli/dispatch.rs`](src/cli/dispatch.rs) is the single
+mapping from [`Algo`](src/cli/args.rs) variants to concrete evaluator types. `dispatch_query`
+and `dispatch_bench` each perform one exhaustive `match` per requested algorithm, then call
+generic runners (`run_query_for_evaluator<E>` and `run_bench_for_evaluator<E>`) that are
+monomorphized for the selected evaluator.
+
+Adding a new algorithm requires a new `Algo` variant, its `Display` arm, one `dispatch_query`
+arm, one `dispatch_bench` arm, an `impl Evaluator` for the evaluator type, and an
+`impl ResultCount` for any result type used by CLI count reporting.
 
 ### FFI layer
 

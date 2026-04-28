@@ -6,48 +6,49 @@ use std::path::Path;
 
 use serde::Serialize;
 
-// ── Shared types ─────────────────────────────────────────────────────────────
+/// Outcome of running a single algorithm on a single query.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AlgoStatus {
+    Ok,
+    Error,
+    Panic,
+}
 
 /// Result of running a single algorithm on a single query.
 #[derive(Debug, Serialize)]
 pub struct AlgoResult {
-    pub status: String,
+    pub status: AlgoStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    /// Result count (nnz / number of reachable nodes). Present in both
-    /// `query` and `bench` modes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result_count: Option<usize>,
-    /// Timing statistics — only present in `bench` mode.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timing: Option<AlgoTiming>,
 }
 
 impl AlgoResult {
-    /// Create a successful result with an optional result count and timing.
     pub fn ok(result_count: Option<usize>, timing: Option<AlgoTiming>) -> Self {
         Self {
-            status: "ok".to_string(),
+            status: AlgoStatus::Ok,
             error: None,
             result_count,
             timing,
         }
     }
 
-    /// Create an error result.
     pub fn error(message: String) -> Self {
         Self {
-            status: "error".to_string(),
+            status: AlgoStatus::Error,
             error: Some(message),
             result_count: None,
             timing: None,
         }
     }
 
-    /// Create a panic result.
     pub fn panic(message: String) -> Self {
         Self {
-            status: "panic".to_string(),
+            status: AlgoStatus::Panic,
             error: Some(message),
             result_count: None,
             timing: None,
@@ -55,7 +56,6 @@ impl AlgoResult {
     }
 }
 
-/// Benchmark timings for one algorithm/result.
 #[derive(Debug, Serialize)]
 pub struct AlgoTiming {
     pub total: TimingStats,
@@ -71,7 +71,6 @@ pub struct TimingStats {
     pub iterations: usize,
 }
 
-/// Results for a single query across all algorithms.
 #[derive(Debug, Serialize)]
 pub struct QueryResult {
     pub query_index: usize,
@@ -80,29 +79,25 @@ pub struct QueryResult {
     pub algorithms: HashMap<String, AlgoResult>,
 }
 
-// ── Query output ─────────────────────────────────────────────────────────────
-
-/// Top-level JSON output for the `query` subcommand.
 #[derive(Debug, Serialize)]
 pub struct QueryOutput {
     pub metadata: QueryMetadata,
     pub results: Vec<QueryResult>,
 }
 
-/// Metadata for a `query` run (no criterion parameters).
 #[derive(Debug, Serialize)]
 pub struct QueryMetadata {
     pub timestamp: String,
     pub graph_path: String,
     pub graph_format: String,
     pub queries_file: String,
-    pub base_iri: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_iri: Option<String>,
     pub num_nodes: usize,
     pub num_labels: usize,
 }
 
 impl QueryOutput {
-    /// Write the output to a JSON file.
     pub fn write_to_file(&self, path: &Path) -> Result<(), std::io::Error> {
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
@@ -110,44 +105,28 @@ impl QueryOutput {
     }
 }
 
-// ── Bench output ──────────────────────────────────────────────────────────────
-
-/// Top-level JSON output for the `bench` subcommand.
 #[derive(Debug, Serialize)]
 pub struct BenchOutput {
     pub metadata: BenchMetadata,
-    pub results: Vec<BatchResult>,
+    pub results: Vec<QueryResult>,
 }
 
-/// Metadata for a `bench` run (includes criterion parameters).
 #[derive(Debug, Serialize)]
 pub struct BenchMetadata {
     pub timestamp: String,
     pub graph_path: String,
     pub graph_format: String,
     pub queries_file: String,
-    pub base_iri: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_iri: Option<String>,
     pub num_nodes: usize,
     pub num_labels: usize,
     pub sample_size: usize,
     pub warm_up_secs: u64,
     pub measurement_secs: u64,
-    pub batch_size: usize,
-}
-
-/// Results for a batch of queries.
-#[derive(Debug, Serialize)]
-pub struct BatchResult {
-    /// Zero-based batch index.
-    pub batch_index: usize,
-    /// Query indices included in this batch.
-    pub query_indices: Vec<usize>,
-    /// Per-query results within this batch.
-    pub queries: Vec<QueryResult>,
 }
 
 impl BenchOutput {
-    /// Write the output to a JSON file.
     pub fn write_to_file(&self, path: &Path) -> Result<(), std::io::Error> {
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
@@ -182,5 +161,21 @@ mod tests {
         let value = serde_json::to_value(&result).expect("serialize");
         assert!(value["timing"]["total"].is_object());
         assert!(value["timing"]["ffi_only"].is_object());
+        assert_eq!(value["status"], "ok");
+    }
+
+    #[test]
+    fn error_status_serializes_lowercase() {
+        let r = AlgoResult::error("boom".into());
+        let v = serde_json::to_value(&r).expect("serialize");
+        assert_eq!(v["status"], "error");
+        assert_eq!(v["error"], "boom");
+    }
+
+    #[test]
+    fn panic_status_serializes_lowercase() {
+        let r = AlgoResult::panic("kaboom".into());
+        let v = serde_json::to_value(&r).expect("serialize");
+        assert_eq!(v["status"], "panic");
     }
 }

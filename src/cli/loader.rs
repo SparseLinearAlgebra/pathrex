@@ -1,76 +1,90 @@
 //! Graph and query loading for the `pathrex` CLI.
 //!
 //! Both subcommands (`bench` and `query`) need to load a graph and a queries
-//! file. This module centralises that I/O so neither subcommand runner
-//! duplicates it.
+//! file.
 
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
-use std::process;
 
-use crate::formats::Csv;
+use thiserror::Error;
+
 use crate::formats::mm::MatrixMarket;
-use crate::graph::{Graph, InMemory, InMemoryGraph};
+use crate::formats::Csv;
+use crate::graph::{Graph, GraphError, InMemory, InMemoryGraph};
 use crate::rpq::{RpqError, RpqQuery};
 use crate::sparql::parse_rpq;
 
-// ── Graph loading ────────────────────────────────────────────────────────────
+use super::args::GraphFormat;
+
+#[derive(Debug, Error)]
+pub enum GraphLoadError {
+    #[error("error opening graph at '{path}': {source}")]
+    Open {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("error loading graph from '{path}': {source}")]
+    Build {
+        path: String,
+        #[source]
+        source: GraphError,
+    },
+}
 
 /// Load an [`InMemoryGraph`] from `graph_path` in the given `format`.
-///
-/// Prints an error message and exits the process on failure, which is
-/// appropriate for a CLI entry point.
-pub fn load_graph(graph_path: &str, format: &str, base_iri: &str) -> InMemoryGraph {
+pub fn load_graph(
+    graph_path: &str,
+    format: GraphFormat,
+    base_iri: Option<&str>,
+) -> Result<InMemoryGraph, GraphLoadError> {
     match format {
-        "mm" => {
-            let mm = MatrixMarket::from_dir(graph_path).with_base_iri(base_iri);
-            Graph::<InMemory>::try_from(mm).unwrap_or_else(|e| {
-                eprintln!("Error loading MatrixMarket graph from '{graph_path}': {e}");
-                process::exit(1);
+        GraphFormat::Mm => {
+            let mm_base = MatrixMarket::from_dir(graph_path);
+            let mm = match base_iri {
+                Some(iri) => mm_base.with_base_iri(iri),
+                None => mm_base,
+            };
+            Graph::<InMemory>::try_from(mm).map_err(|e| GraphLoadError::Build {
+                path: graph_path.to_string(),
+                source: e,
             })
         }
-        "csv" => {
-            let file = File::open(graph_path).unwrap_or_else(|e| {
-                eprintln!("Error opening CSV file '{graph_path}': {e}");
-                process::exit(1);
-            });
-            let csv_source = Csv::from_reader(file).unwrap_or_else(|e| {
-                eprintln!("Error creating CSV reader for '{graph_path}': {e}");
-                process::exit(1);
-            });
-            Graph::<InMemory>::try_from(csv_source).unwrap_or_else(|e| {
-                eprintln!("Error loading CSV graph from '{graph_path}': {e}");
-                process::exit(1);
+        GraphFormat::Csv => {
+            let file = File::open(graph_path).map_err(|e| GraphLoadError::Open {
+                path: graph_path.to_string(),
+                source: e,
+            })?;
+            let csv_source = Csv::from_reader(file).map_err(|e| GraphLoadError::Build {
+                path: graph_path.to_string(),
+                source: e.into(),
+            })?;
+            Graph::<InMemory>::try_from(csv_source).map_err(|e| GraphLoadError::Build {
+                path: graph_path.to_string(),
+                source: e,
             })
-        }
-        other => {
-            eprintln!("Unknown graph format: '{other}' (expected: mm, csv)");
-            process::exit(1);
         }
     }
 }
 
-// ── Query loading ─────────────────────────────────────────────────────────────
-
-/// A single loaded query with its metadata.
 #[derive(Debug)]
 pub struct LoadedQuery {
-    /// The ID from the query file (the part before the first comma).
     pub id: String,
-    /// The raw SPARQL pattern text (the part after the first comma).
     pub text: String,
-    /// The parsed RPQ query, or an error if parsing failed.
     pub parsed: Result<RpqQuery, RpqError>,
 }
 
 /// Load and parse queries from a file.
 ///
 /// Each non-empty line must have the format `<id>,<sparql_pattern>`.
-/// The pattern is wrapped into a full SPARQL query:
-/// `BASE <{base_iri}> SELECT * WHERE { {pattern} . }`
-/// before parsing, matching the convention used in integration tests.
-pub fn load_queries(path: &Path, base_iri: &str) -> Result<Vec<LoadedQuery>, std::io::Error> {
+/// The pattern is wrapped into a full SPARQL query before parsing:
+/// - When `base_iri` is `Some(iri)`: `BASE <{iri}> SELECT * WHERE { {pattern} . }`
+/// - When `base_iri` is `None`:      `SELECT * WHERE { {pattern} . }`
+pub fn load_queries(
+    path: &Path,
+    base_iri: Option<&str>,
+) -> Result<Vec<LoadedQuery>, std::io::Error> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     let mut queries = Vec::new();
@@ -96,7 +110,10 @@ pub fn load_queries(path: &Path, base_iri: &str) -> Result<Vec<LoadedQuery>, std
             }
         };
 
-        let sparql = format!("BASE <{base_iri}> SELECT * WHERE {{ {pattern} . }}");
+        let sparql = match base_iri {
+            Some(iri) => format!("BASE <{iri}> SELECT * WHERE {{ {pattern} . }}"),
+            None => format!("SELECT * WHERE {{ {pattern} . }}"),
+        };
         let parsed = parse_rpq(&sparql);
 
         queries.push(LoadedQuery {

@@ -1,9 +1,10 @@
 //! NFA-based RPQ evaluation using `LAGraph_RegularPathQuery`.
 
-use crate::graph::{GraphDecomposition, GraphblasVector, LagraphGraph};
+use crate::eval::{Evaluator, PreparedEvaluator, ResultCount};
+use crate::graph::{GraphDecomposition, GraphError, GraphblasVector, LagraphGraph};
 use crate::lagraph_sys::LAGraph_Kind;
 use crate::lagraph_sys::*;
-use crate::rpq::{Endpoint, PathExpr, RpqError, RpqEvaluator, RpqQuery};
+use crate::rpq::{Endpoint, PathExpr, RpqError, RpqQuery};
 use crate::{grb_ok, la_ok};
 use rustfst::algorithms::closure::{ClosureType, closure};
 use rustfst::algorithms::concat::concat;
@@ -208,6 +209,12 @@ pub struct NfaRpqResult {
     pub reachable: GraphblasVector,
 }
 
+impl ResultCount for NfaRpqResult {
+    fn result_count(&self) -> Result<usize, GraphError> {
+        Ok(self.reachable.nvals()? as usize)
+    }
+}
+
 pub struct PreparedNfaRpq {
     nfa: Nfa,
     nfa_matrices: Vec<(String, LagraphGraph)>,
@@ -244,8 +251,11 @@ fn filter_reachable_by_destination(
     Ok(filtered)
 }
 
-impl PreparedNfaRpq {
-    pub fn execute(&mut self) -> Result<NfaRpqResult, RpqError> {
+impl PreparedEvaluator for PreparedNfaRpq {
+    type Result = NfaRpqResult;
+    type Error = RpqError;
+
+    fn execute(&mut self) -> Result<NfaRpqResult, RpqError> {
         let mut reachable: GrB_Vector = std::ptr::null_mut();
 
         unsafe {
@@ -274,10 +284,16 @@ impl PreparedNfaRpq {
 }
 
 /// Evaluates RPQs using `LAGraph_RegularPathQuery`.
+#[derive(Clone, Copy)]
 pub struct NfaRpqEvaluator;
 
-impl NfaRpqEvaluator {
-    pub fn prepare<G: GraphDecomposition>(
+impl Evaluator for NfaRpqEvaluator {
+    type Query = RpqQuery;
+    type Result = NfaRpqResult;
+    type Error = RpqError;
+    type Prepared = PreparedNfaRpq;
+
+    fn prepare<G: GraphDecomposition>(
         &self,
         query: &RpqQuery,
         graph: &G,
@@ -286,7 +302,7 @@ impl NfaRpqEvaluator {
         let nfa_matrices = nfa.build_lagraph_matrices()?;
 
         let src_id = resolve_endpoint(&query.subject, graph)?;
-        let _dst_id = resolve_endpoint(&query.object, graph)?;
+        let dst_id = resolve_endpoint(&query.object, graph)?;
 
         let n = graph.num_nodes();
         let source_vertices: Vec<GrB_Index> = match src_id {
@@ -312,29 +328,9 @@ impl NfaRpqEvaluator {
             _data_graphs: data_graphs,
             data_graph_ptrs,
             source_vertices,
-            destination_vertex: _dst_id,
+            destination_vertex: dst_id,
             num_nodes: n,
         })
-    }
-}
-
-impl RpqEvaluator for NfaRpqEvaluator {
-    type Result = NfaRpqResult;
-
-    fn evaluate<G: GraphDecomposition>(
-        &self,
-        query: &RpqQuery,
-        graph: &G,
-    ) -> Result<NfaRpqResult, RpqError> {
-        let mut prepared = self.prepare(query, graph)?;
-        let result = prepared.execute()?;
-        let destination_vertex = resolve_endpoint(&query.object, graph)?;
-        let reachable = filter_reachable_by_destination(
-            result.reachable,
-            destination_vertex,
-            graph.num_nodes(),
-        )?;
-        Ok(NfaRpqResult { reachable })
     }
 }
 
