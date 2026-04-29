@@ -212,8 +212,6 @@ impl GraphblasVector {
         indices.truncate(actual_nvals as usize);
         Ok(indices)
     }
-
-
 }
 
 impl Drop for GraphblasVector {

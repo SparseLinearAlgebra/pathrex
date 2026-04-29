@@ -9,8 +9,8 @@ use std::path::Path;
 
 use thiserror::Error;
 
-use crate::formats::mm::MatrixMarket;
 use crate::formats::Csv;
+use crate::formats::mm::MatrixMarket;
 use crate::graph::{Graph, GraphError, InMemory, InMemoryGraph};
 use crate::rpq::{RpqError, RpqQuery};
 use crate::sparql::parse_rpq;

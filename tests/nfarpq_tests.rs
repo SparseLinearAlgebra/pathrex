@@ -21,13 +21,14 @@ static LA_N_EGG_GRAPH: LazyLock<InMemoryGraph> = LazyLock::new(|| {
 });
 
 fn convert_query_line(line: &str) -> RpqQuery {
-    let query_str = line.split_once(',').map(|x| x.1)
+    let query_str = line
+        .split_once(',')
+        .map(|x| x.1)
         .unwrap_or_else(|| panic!("query line has no comma: {line:?}"))
         .trim();
 
     let sparql = format!("BASE <{BASE_IRI}> SELECT * WHERE {{ {query_str} . }}");
 
-    
     parse_rpq(&sparql).unwrap_or_else(|e| panic!("failed to parse query {line:?}: {e}"))
 }
 
