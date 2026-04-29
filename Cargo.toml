@@ -15,11 +15,24 @@ rustfst = "1.2"
 spargebra = "0.4.6"
 thiserror = "1.0"
 
+clap = { version = "4", features = ["derive"], optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+chrono = { version = "0.4", features = ["serde"], optional = true }
+criterion = { version = "0.5", optional = true }
+tempfile = { version = "3", optional = true }
+
 [features]
 regenerate-bindings = ["bindgen"]
+bench = ["clap", "serde", "serde_json", "chrono", "criterion", "tempfile"]
 
 [dev-dependencies]
 tempfile = "3"
 
 [build-dependencies]
 bindgen = { version = "0.71", optional = true }
+
+[[bin]]
+name = "pathrex"
+path = "src/bin/pathrex.rs"
+required-features = ["bench"]

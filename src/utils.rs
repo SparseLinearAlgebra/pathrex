@@ -134,16 +134,14 @@ impl From<i32> for GrB_Info {
 /// ```
 #[macro_export]
 macro_rules! grb_ok {
-    ($grb_func:expr) => {
-        {
-            let info: $crate::lagraph_sys::GrB_Info = $grb_func.into();
-            if info == $crate::lagraph_sys::GrB_Info::GrB_SUCCESS {
-                Ok(())
-            } else {
-                Err($crate::graph::GraphError::GraphBlas(info))
-            }
+    ($grb_func:expr) => {{
+        let info: $crate::lagraph_sys::GrB_Info = $grb_func.into();
+        if info == $crate::lagraph_sys::GrB_Info::GrB_SUCCESS {
+            Ok(())
+        } else {
+            Err($crate::graph::GraphError::GraphBlas(info))
         }
-    };
+    }};
 }
 
 /// Calls a raw LAGraph function and maps its `i32` return code to

@@ -7,7 +7,7 @@ use pathrex::formats::mm::MatrixMarket;
 use pathrex::graph::{Graph, GraphDecomposition, GraphError, InMemory, InMemoryGraph};
 use pathrex::lagraph_sys::GrB_Index;
 use pathrex::rpq::nfarpq::NfaRpqEvaluator;
-use pathrex::rpq::{Endpoint, PathExpr, RpqError, RpqEvaluator, RpqQuery};
+use pathrex::rpq::{Endpoint, PathExpr, PreparedRpq, RpqError, RpqEvaluator, RpqQuery};
 use pathrex::sparql::parse_rpq;
 use pathrex::utils::build_graph;
 
@@ -21,13 +21,14 @@ static LA_N_EGG_GRAPH: LazyLock<InMemoryGraph> = LazyLock::new(|| {
 });
 
 fn convert_query_line(line: &str) -> RpqQuery {
-    let query_str = line.split_once(',').map(|x| x.1)
+    let query_str = line
+        .split_once(',')
+        .map(|x| x.1)
         .unwrap_or_else(|| panic!("query line has no comma: {line:?}"))
         .trim();
 
     let sparql = format!("BASE <{BASE_IRI}> SELECT * WHERE {{ {query_str} . }}");
 
-    
     parse_rpq(&sparql).unwrap_or_else(|e| panic!("failed to parse query {line:?}: {e}"))
 }
 
@@ -165,6 +166,70 @@ fn test_sequence_path() {
 
     let count = result.reachable.nvals().expect("failed to get nvals");
     assert_eq!(count, 1);
+}
+
+#[test]
+fn prepared_nfa_execution_matches_evaluate() {
+    let graph = build_graph(&[("A", "B", "knows"), ("B", "C", "likes")]);
+    let query = rq(
+        var("x"),
+        PathExpr::Sequence(Box::new(label("knows")), Box::new(label("likes"))),
+        var("y"),
+    );
+
+    let evaluator = NfaRpqEvaluator;
+    let direct = evaluator.evaluate(&query, &graph).expect("direct");
+    let direct_count = direct.reachable.nvals().expect("direct nvals");
+
+    let mut prepared = evaluator.prepare(&query, &graph).expect("prepare");
+    let prepared_result = prepared.execute().expect("prepared execute");
+    let prepared_count = prepared_result.reachable.nvals().expect("prepared nvals");
+
+    assert_eq!(prepared_count, direct_count);
+}
+
+#[test]
+fn test_bound_object_filters_reachable_targets() {
+    let graph = build_graph(&[("A", "B", "knows"), ("C", "D", "knows")]);
+    let evaluator = NfaRpqEvaluator;
+
+    let result = evaluator
+        .evaluate(&rq(var("x"), label("knows"), named_ep("B")), &graph)
+        .expect("evaluate should succeed");
+
+    let indices = result
+        .reachable
+        .indices()
+        .expect("failed to extract indices");
+    let b_id = graph.get_node_id("B").expect("B should exist") as GrB_Index;
+    let d_id = graph.get_node_id("D").expect("D should exist") as GrB_Index;
+
+    assert_eq!(
+        indices,
+        vec![b_id],
+        "only the bound object should remain reachable"
+    );
+    assert!(
+        !indices.contains(&d_id),
+        "unbound reachable targets must be filtered out"
+    );
+}
+
+#[test]
+fn prepared_nfa_execution_respects_bound_object() {
+    let graph = build_graph(&[("A", "B", "knows"), ("C", "D", "knows")]);
+    let evaluator = NfaRpqEvaluator;
+    let query = rq(var("x"), label("knows"), named_ep("B"));
+
+    let mut prepared = evaluator.prepare(&query, &graph).expect("prepare");
+    let prepared_result = prepared.execute().expect("prepared execute");
+    let prepared_indices = prepared_result
+        .reachable
+        .indices()
+        .expect("prepared indices");
+    let b_id = graph.get_node_id("B").expect("B should exist") as GrB_Index;
+
+    assert_eq!(prepared_indices, vec![b_id]);
 }
 
 /// Graph: A --knows--> B --likes--> C

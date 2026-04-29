@@ -13,6 +13,7 @@
 pub mod nfarpq;
 pub mod rpqmatrix;
 
+use crate::eval::{Evaluator, PreparedEvaluator};
 use crate::graph::{GraphDecomposition, GraphError};
 use crate::sparql::ExtractError;
 use spargebra::SparqlSyntaxError;
@@ -51,7 +52,9 @@ impl RpqQuery {
 }
 
 fn strip_endpoint(ep: &mut Endpoint, base: &str) {
-    if let Endpoint::Named(s) = ep && s.starts_with(base) {
+    if let Endpoint::Named(s) = ep
+        && s.starts_with(base)
+    {
         *s = s[base.len()..].to_owned();
     }
 }
@@ -91,13 +94,28 @@ pub enum RpqError {
     Graph(#[from] GraphError),
 }
 
-pub trait RpqEvaluator {
-    /// Output of this evaluator (e.g. reachable vector vs path matrix + nnz).
-    type Result;
+pub trait RpqEvaluator: Evaluator<Query = RpqQuery, Error = RpqError> {
+    fn prepare<G: GraphDecomposition>(
+        &self,
+        query: &RpqQuery,
+        graph: &G,
+    ) -> Result<Self::Prepared, RpqError> {
+        <Self as Evaluator>::prepare(self, query, graph)
+    }
 
     fn evaluate<G: GraphDecomposition>(
         &self,
         query: &RpqQuery,
         graph: &G,
-    ) -> Result<Self::Result, RpqError>;
+    ) -> Result<Self::Result, RpqError> {
+        <Self as Evaluator>::evaluate(self, query, graph)
+    }
 }
+impl<T> RpqEvaluator for T where T: Evaluator<Query = RpqQuery, Error = RpqError> {}
+
+pub trait PreparedRpq: PreparedEvaluator<Error = RpqError> {
+    fn execute(&mut self) -> Result<Self::Result, RpqError> {
+        <Self as PreparedEvaluator>::execute(self)
+    }
+}
+impl<T> PreparedRpq for T where T: PreparedEvaluator<Error = RpqError> {}

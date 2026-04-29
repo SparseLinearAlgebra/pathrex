@@ -1,11 +1,12 @@
 //! NFA-based RPQ evaluation using `LAGraph_RegularPathQuery`.
 
-use crate::graph::{GraphDecomposition, GraphblasVector, LagraphGraph};
-use crate::la_ok;
+use crate::eval::{Evaluator, PreparedEvaluator, ResultCount};
+use crate::graph::{GraphDecomposition, GraphError, GraphblasVector, LagraphGraph};
 use crate::lagraph_sys::LAGraph_Kind;
 use crate::lagraph_sys::*;
-use crate::rpq::{Endpoint, PathExpr, RpqError, RpqEvaluator, RpqQuery};
-use rustfst::algorithms::closure::{closure, ClosureType};
+use crate::rpq::{Endpoint, PathExpr, RpqError, RpqQuery};
+use crate::{grb_ok, la_ok};
+use rustfst::algorithms::closure::{ClosureType, closure};
 use rustfst::algorithms::concat::concat;
 use rustfst::algorithms::rm_epsilon::rm_epsilon;
 use rustfst::algorithms::union::union;
@@ -13,6 +14,7 @@ use rustfst::prelude::*;
 use rustfst::semirings::TropicalWeight;
 use rustfst::utils::{acceptor, epsilon_machine};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Transitions for a single edge label in the NFA.
 ///
@@ -207,60 +209,127 @@ pub struct NfaRpqResult {
     pub reachable: GraphblasVector,
 }
 
-/// Evaluates RPQs using `LAGraph_RegularPathQuery`.
-pub struct NfaRpqEvaluator;
+impl ResultCount for NfaRpqResult {
+    fn result_count(&self) -> Result<usize, GraphError> {
+        Ok(self.reachable.nvals()? as usize)
+    }
+}
 
-impl RpqEvaluator for NfaRpqEvaluator {
-    type Result = NfaRpqResult;
+pub struct PreparedNfaRpq {
+    nfa: Nfa,
+    nfa_matrices: Vec<(String, LagraphGraph)>,
+    nfa_graph_ptrs: Vec<LAGraph_Graph>,
+    _data_graphs: Vec<Arc<LagraphGraph>>,
+    data_graph_ptrs: Vec<LAGraph_Graph>,
+    source_vertices: Vec<GrB_Index>,
+    destination_vertex: Option<usize>,
+    num_nodes: usize,
+}
 
-    fn evaluate<G: GraphDecomposition>(
-        &self,
-        query: &RpqQuery,
-        graph: &G,
-    ) -> Result<NfaRpqResult, RpqError> {
-        let nfa = Nfa::from_path_expr(&query.path)?;
-        let nfa_matrices = nfa.build_lagraph_matrices()?;
+fn filter_reachable_by_destination(
+    reachable: GraphblasVector,
+    destination_vertex: Option<usize>,
+    num_nodes: usize,
+) -> Result<GraphblasVector, RpqError> {
+    let Some(destination_vertex) = destination_vertex else {
+        return Ok(reachable);
+    };
 
-        let src_id = resolve_endpoint(&query.subject, graph)?;
-        let _dst_id = resolve_endpoint(&query.object, graph)?;
+    let indices = reachable.indices().map_err(RpqError::Graph)?;
+    let filtered = GraphblasVector::new_bool(num_nodes as GrB_Index)?;
 
-        let n = graph.num_nodes();
-
-        let source_vertices: Vec<GrB_Index> = match src_id {
-            Some(id) => vec![id as GrB_Index],
-            None => (0..n as GrB_Index).collect(),
+    if indices.contains(&(destination_vertex as GrB_Index)) {
+        unsafe {
+            grb_ok!(GrB_Vector_setElement_BOOL(
+                filtered.inner,
+                true,
+                destination_vertex as GrB_Index,
+            ))?
         };
+    }
 
-        let mut nfa_graph_ptrs: Vec<LAGraph_Graph> =
-            nfa_matrices.iter().map(|(_, lg)| lg.inner).collect();
+    Ok(filtered)
+}
 
-        let mut data_graph_ptrs: Vec<LAGraph_Graph> = Vec::with_capacity(nfa_matrices.len());
-        for (label, _) in &nfa_matrices {
-            let lg = graph.get_graph(label)?;
-            data_graph_ptrs.push(lg.inner);
-        }
+impl PreparedEvaluator for PreparedNfaRpq {
+    type Result = NfaRpqResult;
+    type Error = RpqError;
 
+    fn execute(&mut self) -> Result<NfaRpqResult, RpqError> {
         let mut reachable: GrB_Vector = std::ptr::null_mut();
 
         unsafe {
             la_ok!(LAGraph_RegularPathQuery(
                 &mut reachable,
-                nfa_graph_ptrs.as_mut_ptr(),
-                nfa_matrices.len(),
-                nfa.start_states.as_ptr(),
-                nfa.start_states.len(),
-                nfa.final_states.as_ptr(),
-                nfa.final_states.len(),
-                data_graph_ptrs.as_mut_ptr(),
-                source_vertices.as_ptr(),
-                source_vertices.len(),
+                self.nfa_graph_ptrs.as_mut_ptr(),
+                self.nfa_matrices.len(),
+                self.nfa.start_states.as_ptr(),
+                self.nfa.start_states.len(),
+                self.nfa.final_states.as_ptr(),
+                self.nfa.final_states.len(),
+                self.data_graph_ptrs.as_mut_ptr(),
+                self.source_vertices.as_ptr(),
+                self.source_vertices.len(),
             ))?
         };
 
-        let result_vec = GraphblasVector { inner: reachable };
+        let reachable = filter_reachable_by_destination(
+            GraphblasVector { inner: reachable },
+            self.destination_vertex,
+            self.num_nodes,
+        )?;
 
-        Ok(NfaRpqResult {
-            reachable: result_vec,
+        Ok(NfaRpqResult { reachable })
+    }
+}
+
+/// Evaluates RPQs using `LAGraph_RegularPathQuery`.
+#[derive(Clone, Copy)]
+pub struct NfaRpqEvaluator;
+
+impl Evaluator for NfaRpqEvaluator {
+    type Query = RpqQuery;
+    type Result = NfaRpqResult;
+    type Error = RpqError;
+    type Prepared = PreparedNfaRpq;
+
+    fn prepare<G: GraphDecomposition>(
+        &self,
+        query: &RpqQuery,
+        graph: &G,
+    ) -> Result<PreparedNfaRpq, RpqError> {
+        let nfa = Nfa::from_path_expr(&query.path)?;
+        let nfa_matrices = nfa.build_lagraph_matrices()?;
+
+        let src_id = resolve_endpoint(&query.subject, graph)?;
+        let dst_id = resolve_endpoint(&query.object, graph)?;
+
+        let n = graph.num_nodes();
+        let source_vertices: Vec<GrB_Index> = match src_id {
+            Some(id) => vec![id as GrB_Index],
+            None => (0..n as GrB_Index).collect(),
+        };
+
+        let nfa_graph_ptrs: Vec<LAGraph_Graph> =
+            nfa_matrices.iter().map(|(_, lg)| lg.inner).collect();
+
+        let mut data_graphs = Vec::with_capacity(nfa_matrices.len());
+        let mut data_graph_ptrs = Vec::with_capacity(nfa_matrices.len());
+        for (label, _) in &nfa_matrices {
+            let lg = graph.get_graph(label)?;
+            data_graph_ptrs.push(lg.inner);
+            data_graphs.push(lg);
+        }
+
+        Ok(PreparedNfaRpq {
+            nfa,
+            nfa_matrices,
+            nfa_graph_ptrs,
+            _data_graphs: data_graphs,
+            data_graph_ptrs,
+            source_vertices,
+            destination_vertex: dst_id,
+            num_nodes: n,
         })
     }
 }

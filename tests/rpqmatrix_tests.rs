@@ -7,7 +7,7 @@ use pathrex::formats::mm::MatrixMarket;
 use pathrex::graph::{Graph, GraphDecomposition, GraphError, InMemory, InMemoryGraph};
 use pathrex::lagraph_sys::{GrB_Index, GrB_Info, GrB_Matrix_extractElement_BOOL};
 use pathrex::rpq::rpqmatrix::{RpqMatrixEvaluator, RpqMatrixResult};
-use pathrex::rpq::{Endpoint, PathExpr, RpqError, RpqEvaluator, RpqQuery};
+use pathrex::rpq::{Endpoint, PathExpr, PreparedRpq, RpqError, RpqEvaluator, RpqQuery};
 use pathrex::sparql::parse_rpq;
 use pathrex::utils::build_graph;
 
@@ -21,13 +21,14 @@ static LA_N_EGG_GRAPH: LazyLock<InMemoryGraph> = LazyLock::new(|| {
 });
 
 fn convert_query_line(line: &str) -> RpqQuery {
-    let query_str = line.split_once(',').map(|x| x.1)
+    let query_str = line
+        .split_once(',')
+        .map(|x| x.1)
         .unwrap_or_else(|| panic!("query line has no comma: {line:?}"))
         .trim();
 
     let sparql = format!("BASE <{BASE_IRI}> SELECT * WHERE {{ {query_str} . }}");
 
-    
     parse_rpq(&sparql).unwrap_or_else(|e| panic!("failed to parse query {line:?}: {e}"))
 }
 
@@ -170,6 +171,38 @@ fn test_sequence_path() {
         .expect("evaluate should succeed");
 
     assert_eq!(result.nnz, 1);
+}
+
+#[test]
+fn prepared_rpqmatrix_execution_matches_evaluate() {
+    let graph = build_graph(&[("A", "B", "p"), ("B", "C", "q")]);
+    let query = rq(
+        var("x"),
+        PathExpr::Sequence(Box::new(label("p")), Box::new(label("q"))),
+        var("y"),
+    );
+
+    let direct = RpqMatrixEvaluator.evaluate(&query, &graph).expect("direct");
+    let mut prepared = RpqMatrixEvaluator.prepare(&query, &graph).expect("prepare");
+    let prepared_result = prepared.execute().expect("execute");
+
+    assert_eq!(prepared_result.nnz, direct.nnz);
+}
+
+#[test]
+fn prepared_rpqmatrix_execution_can_run_twice() {
+    let graph = build_graph(&[("A", "B", "p"), ("B", "C", "q")]);
+    let query = rq(
+        var("x"),
+        PathExpr::Sequence(Box::new(label("p")), Box::new(label("q"))),
+        var("y"),
+    );
+
+    let mut prepared = RpqMatrixEvaluator.prepare(&query, &graph).expect("prepare");
+    let first = prepared.execute().expect("first");
+    let second = prepared.execute().expect("second");
+
+    assert_eq!(first.nnz, second.nnz);
 }
 
 /// Graph: A --knows--> B --likes--> C
