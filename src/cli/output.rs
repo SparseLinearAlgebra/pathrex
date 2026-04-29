@@ -99,8 +99,7 @@ pub struct QueryMetadata {
 
 impl QueryOutput {
     pub fn write_to_file(&self, path: &Path) -> Result<(), std::io::Error> {
-        let json = serde_json::to_string_pretty(self)
-            .map_err(std::io::Error::other)?;
+        let json = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
         fs::write(path, json)
     }
 }
@@ -128,8 +127,7 @@ pub struct BenchMetadata {
 
 impl BenchOutput {
     pub fn write_to_file(&self, path: &Path) -> Result<(), std::io::Error> {
-        let json = serde_json::to_string_pretty(self)
-            .map_err(std::io::Error::other)?;
+        let json = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
         fs::write(path, json)
     }
 }
