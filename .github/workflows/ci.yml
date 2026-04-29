@@ -8,6 +8,45 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  lint:
+    name: Lint (fmt + clippy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          lfs: true
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake libclang-dev clang
+
+      - name: Build and install SuiteSparse:GraphBLAS
+        run: |
+          git clone --depth 1 https://github.com/DrTimothyAldenDavis/GraphBLAS.git
+          cd GraphBLAS
+          make compact
+          sudo make install
+
+      - name: Build and install LAGraph
+        run: |
+          cd deps/LAGraph
+          make
+          sudo make install
+
+      - name: Install Rust toolchain (stable)
+        run: |
+          rustup update stable
+          rustup default stable
+          rustup component add rustfmt clippy
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
   build_and_test:
     name: Rust project - latest
     runs-on: ubuntu-latest
