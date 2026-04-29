@@ -141,10 +141,9 @@ impl std::fmt::Display for Algo {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 #[value(rename_all = "lowercase")]
 pub enum GraphFormat {
-    /// MatrixMarket directory layout (vertices.txt, edges.txt, *.txt).
     Mm,
-    /// CSV file with source/target/label columns.
     Csv,
+    Rdf,
 }
 
 impl std::fmt::Display for GraphFormat {
@@ -152,6 +151,7 @@ impl std::fmt::Display for GraphFormat {
         match self {
             GraphFormat::Mm => write!(f, "mm"),
             GraphFormat::Csv => write!(f, "csv"),
+            GraphFormat::Rdf => write!(f, "rdf"),
         }
     }
 }

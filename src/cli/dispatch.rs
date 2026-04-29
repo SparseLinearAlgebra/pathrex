@@ -49,8 +49,6 @@ pub fn dispatch_bench(
     queries: &[LoadedQuery],
     checkpointer: &mut Checkpointer,
 ) -> Result<Vec<QueryResult>, BenchError> {
-    validate_bench_args(args)?;
-
     let mut all = Vec::new();
 
     for algo in &args.common.algo {

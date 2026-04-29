@@ -10,7 +10,8 @@ use std::path::Path;
 use thiserror::Error;
 
 use crate::formats::Csv;
-use crate::formats::mm::MatrixMarket;
+use crate::formats::MatrixMarket;
+use crate::formats::Rdf;
 use crate::graph::{Graph, GraphError, InMemory, InMemoryGraph};
 use crate::rpq::{RpqError, RpqQuery};
 use crate::sparql::parse_rpq;
@@ -61,6 +62,13 @@ pub fn load_graph(
                 source: e.into(),
             })?;
             Graph::<InMemory>::try_from(csv_source).map_err(|e| GraphLoadError::Build {
+                path: graph_path.to_string(),
+                source: e,
+            })
+        }
+        GraphFormat::Rdf => {
+            let rdf = Rdf::from_path(graph_path).unwrap();
+            Graph::<InMemory>::try_from(rdf).map_err(|e| GraphLoadError::Build {
                 path: graph_path.to_string(),
                 source: e,
             })
