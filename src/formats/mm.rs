@@ -24,56 +24,12 @@
 //! ```
 
 use std::collections::HashMap;
-use std::ffi::CString;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::os::fd::IntoRawFd;
 use std::path::{Path, PathBuf};
 
 use crate::formats::FormatError;
-use crate::graph::{GraphError, ensure_grb_init};
-use crate::la_ok;
-use crate::lagraph_sys::{FILE, GrB_Matrix, LAGraph_MMRead};
-
-/// Read a single MatrixMarket file and return the raw [`GrB_Matrix`].
-pub fn load_mm_file(path: impl AsRef<Path>) -> Result<GrB_Matrix, FormatError> {
-    let path = path.as_ref();
-
-    ensure_grb_init().map_err(|e| match e {
-        GraphError::LAGraph(info, msg) => FormatError::MatrixMarket {
-            code: info,
-            message: msg,
-        },
-        _ => FormatError::MatrixMarket {
-            code: crate::lagraph_sys::GrB_Info::GrB_PANIC,
-            message: "Failed to initialize GraphBLAS".to_string(),
-        },
-    })?;
-
-    let file = File::open(path)?;
-    let fd = file.into_raw_fd();
-
-    let c_mode = CString::new("r").unwrap();
-    let f = unsafe { libc::fdopen(fd, c_mode.as_ptr()) };
-    if f.is_null() {
-        unsafe { libc::close(fd) };
-        return Err(std::io::Error::last_os_error().into());
-    }
-
-    let mut matrix: GrB_Matrix = std::ptr::null_mut();
-
-    let err = la_ok!(LAGraph_MMRead(&mut matrix, f as *mut FILE));
-    unsafe { libc::fclose(f) };
-
-    match err {
-        Ok(_) => Ok(matrix),
-        Err(GraphError::LAGraph(info, msg)) => Err(FormatError::MatrixMarket {
-            code: info,
-            message: msg,
-        }),
-        _ => unreachable!("should be either mm read error or ok"),
-    }
-}
+pub use crate::graph::load_mm_file;
 
 // Trims first "<" and last ">".
 fn normalize_map_name(name: &str) -> String {
@@ -92,12 +48,12 @@ pub(crate) fn apply_base_iri(name: String, base: Option<&str>) -> String {
     }
 }
 
+type IndexMap = (HashMap<usize, String>, HashMap<String, usize>);
+
 /// Parse a `<name> <index>` mapping file.
 ///
 /// Throws error on non-positive or duplicate indicies
-pub(crate) fn parse_index_map(
-    path: &Path,
-) -> Result<(HashMap<usize, String>, HashMap<String, usize>), FormatError> {
+pub(crate) fn parse_index_map(path: &Path) -> Result<IndexMap, FormatError> {
     let file_name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -189,7 +145,7 @@ impl MatrixMarket {
         self
     }
 
-    pub(crate) fn mm_path(&self, idx: usize) -> PathBuf {
+    pub fn mm_path(&self, idx: usize) -> PathBuf {
         self.dir.join(format!("{}.txt", idx))
     }
 }
@@ -278,10 +234,12 @@ mod tests {
 
     #[test]
     fn test_load_nonexistent_mm_file_returns_io_error() {
+        use crate::formats::FormatError;
+        use crate::graph::GraphError;
         let result = load_mm_file("/nonexistent/path/to/file.txt");
         assert!(
-            matches!(result, Err(FormatError::Io(_))),
-            "expected Io error for missing file, got: {:?}",
+            matches!(result, Err(GraphError::Format(FormatError::Io(_)))),
+            "expected Format(Io) error for missing file, got: {:?}",
             result
         );
     }

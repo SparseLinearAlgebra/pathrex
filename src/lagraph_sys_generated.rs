@@ -263,6 +263,20 @@ unsafe extern "C" {
     ) -> ::std::os::raw::c_int;
 }
 unsafe extern "C" {
+    pub fn LAGraph_GetNumThreads(
+        nthreads_outer: *mut ::std::os::raw::c_int,
+        nthreads_inner: *mut ::std::os::raw::c_int,
+        msg: *mut ::std::os::raw::c_char,
+    ) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn LAGraph_SetNumThreads(
+        nthreads_outer: ::std::os::raw::c_int,
+        nthreads_inner: ::std::os::raw::c_int,
+        msg: *mut ::std::os::raw::c_char,
+    ) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
     pub fn LAGraph_MMRead(
         A: *mut GrB_Matrix,
         f: *mut FILE,

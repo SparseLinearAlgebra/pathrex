@@ -122,10 +122,10 @@ fn test_mm_graph_matrix_dimensions() {
     for label in expected_labels {
         let matrix = graph
             .get_graph(label)
-            .expect(&format!("Should have matrix for label {}", label));
+            .unwrap_or_else(|_| panic!("Should have matrix for label {}", label));
         matrix
             .check_graph()
-            .expect(&format!("Matrix for {} should be valid", label));
+            .unwrap_or_else(|_| panic!("Matrix for {} should be valid", label));
     }
 }
 

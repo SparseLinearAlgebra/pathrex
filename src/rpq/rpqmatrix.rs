@@ -4,7 +4,7 @@ use std::ptr::null_mut;
 
 use egg::{Id, RecExpr, define_language};
 
-use crate::graph::{GraphDecomposition, GraphblasMatrix, ensure_grb_init};
+use crate::graph::{GraphDecomposition, GraphblasMatrix};
 use crate::lagraph_sys::*;
 use crate::rpq::{Endpoint, PathExpr, RpqError, RpqEvaluator, RpqQuery};
 use crate::{grb_ok, la_ok};
@@ -119,7 +119,10 @@ pub fn materialize<G: GraphDecomposition>(
                     .ok_or_else(|| RpqError::VertexNotFound(name.clone()))?
                     as GrB_Index;
                 let mut mat: GrB_Matrix = null_mut();
-                grb_ok!(LAGraph_RPQMatrix_label(&mut mat, vertex_id, n, n,))?;
+                unsafe {
+                    crate::graph::ensure_grb_init()?;
+                    grb_ok!(LAGraph_RPQMatrix_label(&mut mat, vertex_id, n, n,))?
+                };
                 if mat.is_null() {
                     return Err(RpqError::Graph(crate::graph::GraphError::GraphBlas(
                         GrB_Info::GrB_INVALID_VALUE,
@@ -182,15 +185,13 @@ impl RpqEvaluator for RpqMatrixEvaluator {
         query: &RpqQuery,
         graph: &G,
     ) -> Result<RpqMatrixResult, RpqError> {
-        ensure_grb_init()?;
-
         let expr = query_to_expr(query)?;
         let (mut plans, owned_matrices) = materialize(&expr, graph)?;
 
         let root_ptr = unsafe { plans.as_mut_ptr().add(plans.len() - 1) };
 
         let mut nnz: GrB_Index = 0;
-        la_ok!(LAGraph_RPQMatrix(&mut nnz, root_ptr))?;
+        unsafe { la_ok!(LAGraph_RPQMatrix(&mut nnz, root_ptr))? };
 
         let matrix = unsafe {
             let mat = (*root_ptr).res_mat;
@@ -198,7 +199,7 @@ impl RpqEvaluator for RpqMatrixEvaluator {
             GraphblasMatrix { inner: mat }
         };
 
-        grb_ok!(LAGraph_DestroyRpqMatrixPlan(root_ptr))?;
+        unsafe { grb_ok!(LAGraph_DestroyRpqMatrixPlan(root_ptr))? };
 
         // Free diagonal matrices created for named vertices.
         for mut mat in owned_matrices {

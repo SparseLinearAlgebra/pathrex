@@ -1,11 +1,11 @@
 //! NFA-based RPQ evaluation using `LAGraph_RegularPathQuery`.
 
-use crate::graph::{GraphDecomposition, GraphblasVector, LagraphGraph, ensure_grb_init};
+use crate::graph::{GraphDecomposition, GraphblasVector, LagraphGraph};
 use crate::la_ok;
-use crate::lagraph_sys::*;
 use crate::lagraph_sys::LAGraph_Kind;
+use crate::lagraph_sys::*;
 use crate::rpq::{Endpoint, PathExpr, RpqError, RpqEvaluator, RpqQuery};
-use rustfst::algorithms::closure::{ClosureType, closure};
+use rustfst::algorithms::closure::{closure, ClosureType};
 use rustfst::algorithms::concat::concat;
 use rustfst::algorithms::rm_epsilon::rm_epsilon;
 use rustfst::algorithms::union::union;
@@ -83,7 +83,6 @@ impl Nfa {
 
     /// Convert NFA transitions to LAGraph matrices for RPQ evaluation.
     pub fn build_lagraph_matrices(&self) -> Result<Vec<(String, LagraphGraph)>, RpqError> {
-        ensure_grb_init()?;
         let n = self.num_states as GrB_Index;
         let mut result = Vec::with_capacity(self.transitions.len());
 
@@ -243,18 +242,20 @@ impl RpqEvaluator for NfaRpqEvaluator {
 
         let mut reachable: GrB_Vector = std::ptr::null_mut();
 
-        la_ok!(LAGraph_RegularPathQuery(
-            &mut reachable,
-            nfa_graph_ptrs.as_mut_ptr(),
-            nfa_matrices.len(),
-            nfa.start_states.as_ptr(),
-            nfa.start_states.len(),
-            nfa.final_states.as_ptr(),
-            nfa.final_states.len(),
-            data_graph_ptrs.as_mut_ptr(),
-            source_vertices.as_ptr(),
-            source_vertices.len(),
-        ))?;
+        unsafe {
+            la_ok!(LAGraph_RegularPathQuery(
+                &mut reachable,
+                nfa_graph_ptrs.as_mut_ptr(),
+                nfa_matrices.len(),
+                nfa.start_states.as_ptr(),
+                nfa.start_states.len(),
+                nfa.final_states.as_ptr(),
+                nfa.final_states.len(),
+                data_graph_ptrs.as_mut_ptr(),
+                source_vertices.as_ptr(),
+                source_vertices.len(),
+            ))?
+        };
 
         let result_vec = GraphblasVector { inner: reachable };
 

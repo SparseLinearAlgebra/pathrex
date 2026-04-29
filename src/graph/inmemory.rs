@@ -1,15 +1,18 @@
 use std::sync::Arc;
 use std::{collections::HashMap, io::Read};
 
-use crate::formats::mm::{apply_base_iri, load_mm_file, parse_index_map};
-use crate::formats::{Csv, MatrixMarket, NTriples};
+use rayon::prelude::*;
+
+use crate::formats::mm::{apply_base_iri, parse_index_map};
+use crate::formats::{Csv, MatrixMarket, Rdf};
 use crate::{
     graph::GraphSource,
-    lagraph_sys::{GrB_Index, GrB_Matrix, GrB_Matrix_free, LAGraph_Kind},
+    lagraph_sys::{GrB_Index, LAGraph_Kind},
 };
 
 use super::{
-    Backend, Edge, GraphBuilder, GraphDecomposition, GraphError, LagraphGraph, ensure_grb_init,
+    compute_outer_inner, load_mm_file, Backend, Edge, GraphBuilder, GraphDecomposition, GraphError,
+    LagraphGraph, ThreadScope,
 };
 
 /// Marker type for the in-memory GraphBLAS-backed backend.
@@ -101,26 +104,12 @@ impl InMemoryBuilder {
         Ok(self)
     }
 
-    /// Accept a pre-built [`GrB_Matrix`] for `label`, wrapping it in an
-    /// [`LAGraph_Graph`] immediately.
-    pub fn push_grb_matrix(
+    /// Bulk-install pre-wrapped `(label, LagraphGraph)` pairs into `prebuilt`.
+    pub(crate) fn extend_prebuilt<I: IntoIterator<Item = (String, LagraphGraph)>>(
         &mut self,
-        label: impl Into<String>,
-        mut matrix: GrB_Matrix,
-    ) -> Result<(), GraphError> {
-        ensure_grb_init()?;
-        let lg: LagraphGraph =
-            match LagraphGraph::new(matrix, LAGraph_Kind::LAGraph_ADJACENCY_DIRECTED) {
-                Ok(g) => g,
-                Err(e) => {
-                    if !matrix.is_null() {
-                        unsafe { GrB_Matrix_free(&mut matrix) };
-                    }
-                    return Err(e);
-                }
-            };
-        self.prebuilt.insert(label.into(), lg);
-        Ok(())
+        iter: I,
+    ) {
+        self.prebuilt.extend(iter);
     }
 }
 
@@ -129,8 +118,6 @@ impl GraphBuilder for InMemoryBuilder {
     type Error = GraphError;
 
     fn build(self) -> Result<InMemoryGraph, GraphError> {
-        ensure_grb_init()?;
-
         let n: GrB_Index = self
             .id_to_node
             .keys()
@@ -146,20 +133,34 @@ impl GraphBuilder for InMemoryBuilder {
             graphs.insert(label, Arc::new(lg));
         }
 
-        for (label, pairs) in &self.label_buffers {
-            let rows: Vec<GrB_Index> = pairs.iter().map(|(r, _)| *r as GrB_Index).collect();
-            let cols: Vec<GrB_Index> = pairs.iter().map(|(_, c)| *c as GrB_Index).collect();
-            let vals: Vec<bool> = vec![true; pairs.len()];
+        let label_buffers: Vec<(String, Vec<(usize, usize)>)> =
+            self.label_buffers.into_iter().collect();
 
-            let lg = LagraphGraph::from_coo(
-                &rows,
-                &cols,
-                &vals,
-                n,
-                LAGraph_Kind::LAGraph_ADJACENCY_DIRECTED,
-            )?;
+        let (outer, inner) = compute_outer_inner(label_buffers.len());
+        let _scope = ThreadScope::enter(outer, inner)?;
 
-            graphs.insert(label.clone(), Arc::new(lg));
+        let built: Vec<(String, LagraphGraph)> = label_buffers
+            .into_par_iter()
+            .map(
+                |(label, pairs)| -> Result<(String, LagraphGraph), GraphError> {
+                    let rows: Vec<GrB_Index> = pairs.iter().map(|(r, _)| *r as GrB_Index).collect();
+                    let cols: Vec<GrB_Index> = pairs.iter().map(|(_, c)| *c as GrB_Index).collect();
+                    let vals: Vec<bool> = vec![true; pairs.len()];
+
+                    let lg = LagraphGraph::from_coo(
+                        &rows,
+                        &cols,
+                        &vals,
+                        n,
+                        LAGraph_Kind::LAGraph_ADJACENCY_DIRECTED,
+                    )?;
+                    Ok((label, lg))
+                },
+            )
+            .collect::<Result<Vec<_>, GraphError>>()?;
+
+        for (label, lg) in built {
+            graphs.insert(label, Arc::new(lg));
         }
 
         Ok(InMemoryGraph {
@@ -225,27 +226,42 @@ impl GraphSource<InMemoryBuilder> for MatrixMarket {
             .collect();
 
         let (edge_by_idx, _) = parse_index_map(&self.dir.join("edges.txt"))?;
-        let edge_by_idx: HashMap<usize, String> = edge_by_idx
+        let edge_by_idx: Vec<(usize, String)> = edge_by_idx
             .into_iter()
             .map(|(i, label)| (i, apply_base_iri(label, base)))
             .collect();
 
         builder.set_node_map(vert_by_idx, vert_by_name);
 
-        for (idx, label) in edge_by_idx {
-            let path = self.mm_path(idx);
-            let matrix = load_mm_file(&path)?;
-            builder.push_grb_matrix(label, matrix)?;
-        }
+        let (outer, inner) = compute_outer_inner(edge_by_idx.len());
+        let _scope = ThreadScope::enter(outer, inner)?;
+
+        let mm_dir = self.dir.clone();
+        let loaded: Vec<(String, LagraphGraph)> = edge_by_idx
+            .into_par_iter()
+            .map(
+                |(idx, label)| -> Result<(String, LagraphGraph), GraphError> {
+                    let path = mm_dir.join(format!("{}.txt", idx));
+                    let matrix = load_mm_file(&path)?;
+                    let lg = LagraphGraph::from_matrix(
+                        matrix,
+                        LAGraph_Kind::LAGraph_ADJACENCY_DIRECTED,
+                    )?;
+                    Ok((label, lg))
+                },
+            )
+            .collect::<Result<Vec<_>, GraphError>>()?;
+
+        builder.extend_prebuilt(loaded);
 
         Ok(builder)
     }
 }
 
-impl<R: Read> GraphSource<InMemoryBuilder> for NTriples<R> {
+impl GraphSource<InMemoryBuilder> for Rdf {
     fn apply_to(self, mut builder: InMemoryBuilder) -> Result<InMemoryBuilder, GraphError> {
-        for item in self {
-            builder.push_edge(item?)?;
+        for edge in self.parse().flatten() {
+            builder.push_edge(edge)?;
         }
         Ok(builder)
     }
@@ -340,15 +356,36 @@ mod tests {
     }
 
     #[test]
-    fn test_with_stream_from_ntriples() {
-        use crate::formats::nt::NTriples;
+    fn test_rdf_skip_bad_syntax_lines() {
+        use crate::formats::rdf::{Rdf, RdfFormat};
 
-        let nt = "<http://example.org/A> <http://example.org/knows> <http://example.org/B> .\n\
+        let nt = b"<http://example.org/A> <http://example.org/knows> <http://example.org/B> .\n\
+                   THIS IS NOT VALID RDF SYNTAX .\n\
+                   <http://example.org/B> <http://example.org/knows> <http://example.org/C> .\n";
+
+        let graph = InMemoryBuilder::new()
+            .load(Rdf::new(nt.as_ref(), RdfFormat::NTriples))
+            .expect("load should succeed despite bad line")
+            .build()
+            .expect("build should succeed");
+
+        assert_eq!(graph.num_nodes(), 3, "A, B, C must all be present");
+        assert!(
+            graph.get_graph("http://example.org/knows").is_ok(),
+            "label matrix must exist"
+        );
+    }
+
+    #[test]
+    fn test_with_stream_from_rdf() {
+        use crate::formats::rdf::{Rdf, RdfFormat};
+
+        let nt = b"<http://example.org/A> <http://example.org/knows> <http://example.org/B> .\n\
                   <http://example.org/B> <http://example.org/knows> <http://example.org/C> .\n\
                   <http://example.org/A> <http://example.org/likes> <http://example.org/C> .\n";
 
         let graph = InMemoryBuilder::new()
-            .load(NTriples::new(nt.as_bytes()))
+            .load(Rdf::new(nt.as_ref(), RdfFormat::NTriples))
             .expect("load should succeed")
             .build()
             .expect("build should succeed");

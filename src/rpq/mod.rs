@@ -51,10 +51,8 @@ impl RpqQuery {
 }
 
 fn strip_endpoint(ep: &mut Endpoint, base: &str) {
-    if let Endpoint::Named(s) = ep {
-        if s.starts_with(base) {
-            *s = s[base.len()..].to_owned();
-        }
+    if let Endpoint::Named(s) = ep && s.starts_with(base) {
+        *s = s[base.len()..].to_owned();
     }
 }
 
