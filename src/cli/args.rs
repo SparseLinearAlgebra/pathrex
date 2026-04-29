@@ -93,11 +93,15 @@ pub struct BenchArgs {
     #[arg(long)]
     pub resume: bool,
 
-    /// Directory for criterion output.
-    #[arg(long, default_value = "bench_criterion/")]
-    pub criterion_dir: String,
+    /// Directory for criterion output. When omitted, criterion writes into a
+    /// per-group temporary directory that is wiped immediately after each
+    /// benchmark group is parsed (default behavior).
+    #[arg(long)]
+    pub criterion_dir: Option<String>,
 
-    /// Enable criterion HTML plot generation.
+    /// Enable criterion HTML plot generation. Requires `--criterion-dir`,
+    /// since plots written to a tempdir would be wiped before they could be
+    /// inspected.
     #[arg(long)]
     pub plots: bool,
 

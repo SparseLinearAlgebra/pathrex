@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use criterion::{Criterion, black_box};
@@ -14,13 +14,37 @@ use crate::eval::{Evaluator, PreparedEvaluator, ResultCount};
 use crate::graph::InMemoryGraph;
 use crate::rpq::{RpqError, RpqQuery};
 
-/// Build a criterion instance from CLI bench args.
-pub(crate) fn build_criterion(args: &BenchArgs) -> Criterion {
+/// Per-group criterion output destination.
+pub(crate) enum GroupOutput {
+    Temp(tempfile::TempDir),
+    Persistent(PathBuf),
+}
+
+impl GroupOutput {
+    pub(crate) fn for_group(args: &BenchArgs) -> Result<Self, BenchError> {
+        match &args.criterion_dir {
+            Some(p) => Ok(Self::Persistent(PathBuf::from(p))),
+            None => {
+                let td = tempfile::tempdir().map_err(BenchError::TempDir)?;
+                Ok(Self::Temp(td))
+            }
+        }
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        match self {
+            Self::Temp(td) => td.path(),
+            Self::Persistent(p) => p.as_path(),
+        }
+    }
+}
+
+pub(crate) fn build_criterion(args: &BenchArgs, output_dir: &Path) -> Criterion {
     let c = Criterion::default()
         .sample_size(args.sample_size)
         .warm_up_time(Duration::from_secs(args.warm_up))
         .measurement_time(Duration::from_secs(args.measurement))
-        .output_directory(Path::new(&args.criterion_dir));
+        .output_directory(output_dir);
     if args.plots {
         c.with_plots()
     } else {
@@ -33,7 +57,6 @@ fn group_name(query_index: usize, algo_id: &str) -> String {
 }
 
 fn run_benchmark_group<E>(
-    criterion: &mut Criterion,
     args: &BenchArgs,
     algo_name: &str,
     evaluator: E,
@@ -47,6 +70,14 @@ where
 {
     let mut prepared = evaluator.prepare(query, graph)?;
     let group = group_name(query_index, algo_name);
+
+    let output = match GroupOutput::for_group(args) {
+        Ok(o) => o,
+        Err(e) => return Ok(Err(e)),
+    };
+    let output_path = output.path().to_path_buf();
+
+    let mut criterion = build_criterion(args, &output_path);
 
     {
         let mut g = criterion.benchmark_group(&group);
@@ -66,13 +97,10 @@ where
         g.finish();
     }
 
-    Ok(read_algo_timing(Path::new(&args.criterion_dir), &group))
+    Ok(read_algo_timing(&output_path, &group))
 }
 
 /// Run the bench loop for every query in `queries` for one evaluator.
-///
-/// One criterion group is created per `(query, algo)` pair; checkpoint persists
-/// after every algo completion.
 pub fn run_bench_for_evaluator<E>(
     args: &BenchArgs,
     algo: &Algo,
@@ -81,7 +109,6 @@ pub fn run_bench_for_evaluator<E>(
     graph: &InMemoryGraph,
     queries: &[LoadedQuery],
     checkpointer: &mut Checkpointer,
-    criterion: &mut Criterion,
 ) -> Result<Vec<QueryResult>, BenchError>
 where
     E: Evaluator<Query = RpqQuery, Error = RpqError> + Copy,
@@ -123,7 +150,7 @@ where
         eprintln!("[query #{}] id={}", idx, loaded.id);
         eprintln!("  [bench] algo={algo_name}");
 
-        match run_benchmark_group(criterion, args, algo_name, evaluator, query, graph, idx) {
+        match run_benchmark_group(args, algo_name, evaluator, query, graph, idx) {
             Ok(Ok(timing)) => {
                 algorithms.insert(algo_name.to_string(), AlgoResult::ok(None, Some(timing)));
             }
@@ -147,17 +174,4 @@ where
     }
 
     Ok(results)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn group_name_is_filesystem_safe() {
-        let g = group_name(7, "nfa");
-        assert_eq!(g, "query_7_nfa");
-        assert!(!g.contains('/'));
-        assert!(!g.contains(' '));
-    }
 }

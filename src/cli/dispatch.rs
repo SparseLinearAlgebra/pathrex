@@ -2,7 +2,7 @@
 
 use crate::cli::args::{Algo, BenchArgs, QueryArgs};
 use crate::cli::bench::error::BenchError;
-use crate::cli::bench::runner::{build_criterion, run_bench_for_evaluator};
+use crate::cli::bench::runner::run_bench_for_evaluator;
 use crate::cli::checkpoint::Checkpointer;
 use crate::cli::loader::LoadedQuery;
 use crate::cli::output::QueryResult;
@@ -49,7 +49,8 @@ pub fn dispatch_bench(
     queries: &[LoadedQuery],
     checkpointer: &mut Checkpointer,
 ) -> Result<Vec<QueryResult>, BenchError> {
-    let mut criterion = build_criterion(args);
+    validate_bench_args(args)?;
+
     let mut all = Vec::new();
 
     for algo in &args.common.algo {
@@ -63,7 +64,6 @@ pub fn dispatch_bench(
                 graph,
                 queries,
                 checkpointer,
-                &mut criterion,
             )?,
             Algo::Rpqmatrix => run_bench_for_evaluator(
                 args,
@@ -73,7 +73,6 @@ pub fn dispatch_bench(
                 graph,
                 queries,
                 checkpointer,
-                &mut criterion,
             )?,
         };
         merge_results(&mut all, per_algo);

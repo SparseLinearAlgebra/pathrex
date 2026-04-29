@@ -242,7 +242,9 @@ fn run_bench_cmd(args: BenchArgs) -> Result<(), MainError> {
     eprintln!();
     eprintln!("=== Done ===");
     eprintln!("Results written to: {}", args.output);
-    eprintln!("Criterion data in:  {}", args.criterion_dir);
+    if let Some(dir) = &args.criterion_dir {
+        eprintln!("Criterion data in:  {dir}")
+    }
 
     Ok(())
 }

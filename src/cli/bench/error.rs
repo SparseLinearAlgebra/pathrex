@@ -18,4 +18,10 @@ pub enum BenchError {
 
     #[error("checkpoint error: {0}")]
     Checkpoint(#[from] CheckpointError),
+
+    #[error("invalid bench arguments: {0}")]
+    InvalidArgs(String),
+
+    #[error("failed to create temporary directory for criterion output: {0}")]
+    TempDir(#[source] std::io::Error),
 }
