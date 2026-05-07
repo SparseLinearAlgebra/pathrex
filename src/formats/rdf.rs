@@ -141,11 +141,11 @@ fn subject_to_node_id(subject: NamedOrBlankNode) -> String {
     }
 }
 
-fn object_to_node_id(object: Term) -> Result<String, FormatError> {
+fn object_to_node_id(object: Term) -> String {
     match object {
-        Term::NamedNode(n) => Ok(n.into_string()),
-        Term::BlankNode(b) => Ok(format!("_:{}", b.as_str())),
-        Term::Literal(_) => Err(FormatError::LiteralAsNode),
+        Term::NamedNode(n) => n.into_string(),
+        Term::BlankNode(b) => format!("_:{}", b.as_str()),
+        Term::Literal(s) => s.to_string(),
     }
 }
 
@@ -153,7 +153,7 @@ fn object_to_node_id(object: Term) -> Result<String, FormatError> {
 pub(crate) fn triple_to_edge(triple: Triple) -> Result<Edge, FormatError> {
     let source = subject_to_node_id(triple.subject);
     let label = triple.predicate.as_str().to_owned();
-    let target = object_to_node_id(triple.object)?;
+    let target = object_to_node_id(triple.object);
     Ok(Edge {
         source,
         target,
@@ -218,26 +218,6 @@ mod tests {
             .find(|e| e.source == "http://example.org/Alice")
             .unwrap();
         assert_eq!(alice.label, "http://example.org/knows");
-    }
-
-    #[test]
-    fn test_literal_yields_error() {
-        // parallel_rdf_edges now returns Err(FormatError::LiteralAsNode) for literal-object triples
-        let ttl = br#"
-            @prefix ex: <http://example.org/> .
-            ex:Alice ex:name "Alice" .
-            ex:Alice ex:knows ex:Bob .
-        "#;
-        let results = parse_turtle(ttl);
-        let errors: Vec<_> = results.iter().filter(|r| r.is_err()).collect();
-        let edges: Vec<_> = results.iter().filter_map(|r| r.as_ref().ok()).collect();
-        // The literal-object triple produces an error
-        assert_eq!(errors.len(), 1);
-        assert!(matches!(errors[0], Err(FormatError::LiteralAsNode)));
-        // The valid triple still produces an edge
-        assert_eq!(edges.len(), 1);
-        assert_eq!(edges[0].source, "http://example.org/Alice");
-        assert_eq!(edges[0].label, "http://example.org/knows");
     }
 
     #[test]
