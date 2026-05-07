@@ -3,6 +3,7 @@ use pathrex::graph::{
     Edge, Graph, GraphBuilder, GraphDecomposition, GraphError, InMemory, InMemoryBuilder,
 };
 use pathrex::utils::build_graph;
+use std::collections::HashMap;
 
 #[test]
 fn node_ids_are_unique() {
@@ -208,4 +209,108 @@ fn large_graph_node_and_label_counts() {
         .expect("exists")
         .check_graph()
         .expect("valid graph");
+}
+
+/// get_node_id and get_node_name must be inverses of each other for every node.
+#[test]
+fn dictionary_round_trip_for_every_node() {
+    let names = ["Alice", "Bob", "Charlie", "Dave", "Eve"];
+    let mut builder = InMemoryBuilder::new();
+    for (i, &name) in names.iter().enumerate() {
+        builder
+            .push_edge(Edge {
+                source: name.to_owned(),
+                target: names[(i + 1) % names.len()].to_owned(),
+                label: "r".to_owned(),
+            })
+            .unwrap();
+    }
+    let graph = builder.build().unwrap();
+
+    assert_eq!(graph.num_nodes(), names.len());
+
+    for name in &names {
+        let id = graph.get_node_id(name).expect("must resolve name -> id");
+        let resolved = graph.get_node_name(id).expect("must resolve id -> name");
+        assert_eq!(resolved, *name, "round-trip must preserve name");
+    }
+}
+
+/// After set_node_map (the MatrixMarket code path) the dictionary must still
+/// resolve every installed node by name and by id.
+#[test]
+fn set_node_map_preserves_dictionary_round_trip() {
+    // Simulate what the MatrixMarket loader does: build two parallel maps with
+    // 0-based ids and call set_node_map, then build without pushing edges.
+    let nodes: Vec<(&str, usize)> = vec![
+        ("http://example.org/A", 0),
+        ("http://example.org/B", 1),
+        ("http://example.org/C", 2),
+    ];
+
+    let mut id_to_name: HashMap<usize, String> = HashMap::new();
+    let mut name_to_id: HashMap<String, usize> = HashMap::new();
+    for (name, id) in &nodes {
+        id_to_name.insert(*id, name.to_string());
+        name_to_id.insert(name.to_string(), *id);
+    }
+
+    let mut builder = InMemoryBuilder::new();
+    builder.set_node_map(id_to_name, name_to_id);
+    let graph = builder.build().unwrap();
+
+    assert_eq!(graph.num_nodes(), nodes.len());
+
+    for (name, expected_id) in &nodes {
+        let id = graph
+            .get_node_id(name)
+            .expect("must resolve name after set_node_map");
+        assert_eq!(id, *expected_id, "id must match what was installed");
+        let resolved = graph
+            .get_node_name(id)
+            .expect("must resolve id after set_node_map");
+        assert_eq!(resolved, *name, "name round-trip must hold");
+    }
+}
+
+/// Interning the same node name via multiple push_edge calls must not increase
+/// num_nodes beyond the number of distinct names.
+#[test]
+fn repeated_push_edge_does_not_inflate_num_nodes() {
+    let mut builder = InMemoryBuilder::new();
+    for _ in 0..100 {
+        builder
+            .push_edge(Edge {
+                source: "X".to_owned(),
+                target: "Y".to_owned(),
+                label: "r".to_owned(),
+            })
+            .unwrap();
+    }
+    let graph = builder.build().unwrap();
+    // Only two distinct nodes: X and Y.
+    assert_eq!(graph.num_nodes(), 2);
+    assert!(graph.get_node_id("X").is_some());
+    assert!(graph.get_node_id("Y").is_some());
+    assert!(graph.get_node_id("Z").is_none());
+}
+
+/// Node IDs must be contiguous in [0, num_nodes) so that they are valid matrix
+/// indices for GraphBLAS.
+#[test]
+fn node_ids_are_in_range() {
+    let graph = build_graph(&[
+        ("n0", "n1", "r"),
+        ("n1", "n2", "r"),
+        ("n2", "n3", "r"),
+        ("n3", "n0", "r"),
+    ]);
+    let n = graph.num_nodes();
+    assert_eq!(n, 4);
+    let mut ids: Vec<usize> = ["n0", "n1", "n2", "n3"]
+        .iter()
+        .map(|name| graph.get_node_id(name).unwrap())
+        .collect();
+    ids.sort_unstable();
+    assert_eq!(ids, vec![0, 1, 2, 3], "IDs must cover 0..num_nodes exactly");
 }

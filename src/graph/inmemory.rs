@@ -1,6 +1,8 @@
+use std::collections::HashMap;
+use std::io::Read;
 use std::sync::Arc;
-use std::{collections::HashMap, io::Read};
 
+use lasso::{Key, Rodeo, RodeoReader, Spur};
 use rayon::prelude::*;
 
 use crate::formats::mm::{apply_base_iri, parse_index_map};
@@ -37,9 +39,7 @@ impl Backend for InMemory {
 /// Accumulates edges in RAM and compiles them into an [`InMemoryGraph`].
 #[derive(Default)]
 pub struct InMemoryBuilder {
-    node_to_id: HashMap<String, usize>,
-    id_to_node: HashMap<usize, String>,
-    next_id: usize,
+    nodes: Rodeo,
     label_buffers: HashMap<String, Vec<(usize, usize)>>,
     prebuilt: HashMap<String, LagraphGraph>,
 }
@@ -47,40 +47,33 @@ pub struct InMemoryBuilder {
 impl InMemoryBuilder {
     pub fn new() -> Self {
         Self {
-            node_to_id: HashMap::new(),
-            id_to_node: HashMap::new(),
-            next_id: 0,
+            nodes: Rodeo::new(),
             label_buffers: HashMap::new(),
             prebuilt: HashMap::new(),
         }
     }
 
     fn insert_node(&mut self, node: &str) -> usize {
-        if let Some(&id) = self.node_to_id.get(node) {
-            return id;
-        }
-        let id = self.next_id;
-        self.next_id += 1;
-        self.id_to_node.insert(id, node.to_owned());
-        self.node_to_id.insert(node.to_owned(), id);
-        id
+        self.nodes.get_or_intern(node).into_usize()
     }
 
     /// Bulk-install the node mapping. Replaces any previously inserted nodes.
     pub fn set_node_map(
         &mut self,
         by_idx: HashMap<usize, String>,
-        by_name: HashMap<String, usize>,
+        _by_name: HashMap<String, usize>,
     ) {
-        self.id_to_node = by_idx;
-        self.node_to_id = by_name;
-        self.next_id = self
-            .id_to_node
-            .keys()
-            .copied()
-            .max()
-            .map(|m| m + 1)
-            .unwrap_or(0);
+        self.nodes = Rodeo::new();
+        let mut pairs: Vec<(usize, String)> = by_idx.into_iter().collect();
+        pairs.sort_unstable_by_key(|(id, _)| *id);
+        for (expected_id, name) in pairs {
+            let spur = self.nodes.get_or_intern(name);
+            debug_assert_eq!(
+                spur.into_usize(),
+                expected_id,
+                "Spur must match pre-assigned node id"
+            );
+        }
     }
 
     pub fn push_edge(&mut self, edge: Edge) -> Result<(), GraphError> {
@@ -118,13 +111,7 @@ impl GraphBuilder for InMemoryBuilder {
     type Error = GraphError;
 
     fn build(self) -> Result<InMemoryGraph, GraphError> {
-        let n: GrB_Index = self
-            .id_to_node
-            .keys()
-            .copied()
-            .max()
-            .map(|m| m + 1)
-            .unwrap_or(0) as GrB_Index;
+        let n: GrB_Index = self.nodes.len() as GrB_Index;
 
         let mut graphs: HashMap<String, Arc<LagraphGraph>> =
             HashMap::with_capacity(self.label_buffers.len() + self.prebuilt.len());
@@ -163,18 +150,15 @@ impl GraphBuilder for InMemoryBuilder {
             graphs.insert(label, Arc::new(lg));
         }
 
-        Ok(InMemoryGraph {
-            node_to_id: self.node_to_id,
-            id_to_node: self.id_to_node,
-            graphs,
-        })
+        let nodes = self.nodes.into_reader();
+
+        Ok(InMemoryGraph { nodes, graphs })
     }
 }
 
 /// Immutable, read-only Boolean-decomposed graph backed by LAGraph graphs.
 pub struct InMemoryGraph {
-    node_to_id: HashMap<String, usize>,
-    id_to_node: HashMap<usize, String>,
+    nodes: RodeoReader,
     graphs: HashMap<String, Arc<LagraphGraph>>,
 }
 
@@ -187,15 +171,16 @@ impl GraphDecomposition for InMemoryGraph {
     }
 
     fn get_node_id(&self, string_id: &str) -> Option<usize> {
-        self.node_to_id.get(string_id).copied()
+        self.nodes.get(string_id).map(Spur::into_usize)
     }
 
     fn get_node_name(&self, mapped_id: usize) -> Option<String> {
-        self.id_to_node.get(&mapped_id).cloned()
+        let spur = Spur::try_from_usize(mapped_id)?;
+        self.nodes.try_resolve(&spur).map(str::to_owned)
     }
 
     fn num_nodes(&self) -> usize {
-        self.id_to_node.len()
+        self.nodes.len()
     }
 }
 
