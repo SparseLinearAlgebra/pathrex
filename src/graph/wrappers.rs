@@ -143,6 +143,43 @@ impl LagraphGraph {
         Self::from_matrix(owned, kind)
     }
 
+    /// Build a new `LagraphGraph` from coordinate (COO) format with an implicit `true` value
+    /// for every entry, avoiding the allocation of a `vals` boolean array.
+    ///
+    /// Identical to [`from_coo`] but uses `GxB_Matrix_build_Scalar` with a single
+    /// `GrB_Scalar(true)` shared across all entries.
+    pub fn from_coo_bool_scalar(
+        rows: &[GrB_Index],
+        cols: &[GrB_Index],
+        n: GrB_Index,
+        kind: LAGraph_Kind,
+    ) -> Result<Self, GraphError> {
+        ensure_grb_init()?;
+        let nvals = rows.len() as GrB_Index;
+
+        let mut matrix: GrB_Matrix = std::ptr::null_mut();
+        unsafe { grb_ok!(GrB_Matrix_new(&mut matrix, GrB_BOOL, n, n))? };
+        let owned = GraphblasMatrix::from_raw(matrix);
+
+        // Build a GrB_Scalar(true) for use as the constant fill value.
+        let mut scalar: GrB_Scalar = std::ptr::null_mut();
+        unsafe { grb_ok!(GrB_Scalar_new(&mut scalar, GrB_BOOL))? };
+        unsafe { grb_ok!(GrB_Scalar_setElement_BOOL(scalar, true))? };
+
+        let build_result = grb_ok!(unsafe {
+            GxB_Matrix_build_Scalar(owned.inner, rows.as_ptr(), cols.as_ptr(), scalar, nvals)
+        });
+
+        // Free the scalar regardless of build success.
+        unsafe {
+            let _ = grb_ok!(GrB_Scalar_free(&mut scalar));
+        };
+
+        build_result?;
+
+        Self::from_matrix(owned, kind)
+    }
+
     pub fn check_graph(&self) -> Result<(), GraphError> {
         unsafe { la_ok!(LAGraph_CheckGraph(self.inner)) }
     }

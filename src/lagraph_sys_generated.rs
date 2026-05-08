@@ -131,6 +131,12 @@ unsafe extern "C" {
     pub static mut GrB_LOR_LAND_SEMIRING_BOOL: GrB_Semiring;
 }
 unsafe extern "C" {
+    pub fn GrB_Scalar_new(s: *mut GrB_Scalar, type_: GrB_Type) -> GrB_Info;
+}
+unsafe extern "C" {
+    pub fn GrB_Scalar_setElement_BOOL(s: GrB_Scalar, x: bool) -> GrB_Info;
+}
+unsafe extern "C" {
     pub fn GrB_Vector_new(v: *mut GrB_Vector, type_: GrB_Type, n: GrB_Index) -> GrB_Info;
 }
 unsafe extern "C" {
@@ -172,6 +178,15 @@ unsafe extern "C" {
     ) -> GrB_Info;
 }
 unsafe extern "C" {
+    pub fn GxB_Matrix_build_Scalar(
+        C: GrB_Matrix,
+        I_: *const GrB_Index,
+        J: *const GrB_Index,
+        scalar: GrB_Scalar,
+        nvals: GrB_Index,
+    ) -> GrB_Info;
+}
+unsafe extern "C" {
     pub fn GrB_Matrix_extractElement_BOOL(
         x: *mut bool,
         A: GrB_Matrix,
@@ -189,6 +204,9 @@ unsafe extern "C" {
         A: GrB_Matrix,
         desc: GrB_Descriptor,
     ) -> GrB_Info;
+}
+unsafe extern "C" {
+    pub fn GrB_Scalar_free(object: *mut GrB_Scalar) -> GrB_Info;
 }
 unsafe extern "C" {
     pub fn GrB_Vector_free(object: *mut GrB_Vector) -> GrB_Info;

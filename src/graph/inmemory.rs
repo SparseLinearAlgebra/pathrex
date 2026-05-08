@@ -104,6 +104,10 @@ impl InMemoryBuilder {
     ) {
         self.prebuilt.extend(iter);
     }
+
+    pub(crate) fn set_node_rodeo(&mut self, rodeo: lasso::Rodeo) {
+        self.nodes = rodeo;
+    }
 }
 
 impl GraphBuilder for InMemoryBuilder {
@@ -252,9 +256,45 @@ impl GraphSource<InMemoryBuilder> for MatrixMarket {
 
 impl GraphSource<InMemoryBuilder> for Rdf {
     fn apply_to(self, mut builder: InMemoryBuilder) -> Result<InMemoryBuilder, GraphError> {
-        for edge in self.parse().flatten() {
-            builder.push_edge(edge)?;
-        }
+        use crate::formats::rdf::{merge_shards, parse_shards};
+
+        let n_shards = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+
+        let shards = parse_shards(self.as_bytes(), self.format(), n_shards);
+        let merged = merge_shards(shards);
+        dbg!(merged.skipped_total);
+
+        let n: crate::lagraph_sys::GrB_Index = merged.nodes.len() as crate::lagraph_sys::GrB_Index;
+        let n_labels = merged.label_names.len();
+
+        let (outer, inner) = compute_outer_inner(n_labels);
+        let _scope = ThreadScope::enter(outer, inner)?;
+
+        let built: Vec<(String, LagraphGraph)> = merged
+            .label_names
+            .into_par_iter()
+            .zip(merged.edges_by_global_label.into_par_iter())
+            .map(
+                |(label, pairs)| -> Result<(String, LagraphGraph), GraphError> {
+                    let rows: Vec<crate::lagraph_sys::GrB_Index> =
+                        pairs.iter().map(|&(r, _)| r).collect();
+                    let cols: Vec<crate::lagraph_sys::GrB_Index> =
+                        pairs.iter().map(|&(_, c)| c).collect();
+                    let lg = LagraphGraph::from_coo_bool_scalar(
+                        &rows,
+                        &cols,
+                        n,
+                        crate::lagraph_sys::LAGraph_Kind::LAGraph_ADJACENCY_DIRECTED,
+                    )?;
+                    Ok((label, lg))
+                },
+            )
+            .collect::<Result<Vec<_>, GraphError>>()?;
+
+        builder.set_node_rodeo(merged.nodes);
+        builder.extend_prebuilt(built);
         Ok(builder)
     }
 }
