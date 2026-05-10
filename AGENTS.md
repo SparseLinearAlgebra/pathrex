@@ -53,69 +53,82 @@ pathrex/
 
 | Dependency | Purpose |
 |---|---|
-| **SuiteSparse:GraphBLAS** | Sparse matrix engine (`libgraphblas`) |
-| **LAGraph** | Graph algorithm library on top of GraphBLAS (`liblagraph`) |
-| **cmake** | Building LAGraph from source |
+| **cmake** | Building GraphBLAS and LAGraph from source |
+| **git** | Fetching pinned GraphBLAS source at build time |
+| **C/C++ toolchain** | Compiling GraphBLAS and LAGraph (gcc or clang) |
+| **OpenMP runtime** | Linked dynamically: `libgomp` on Linux, `libomp` on macOS, `/openmp` on MSVC |
 | **libclang-dev / clang** | Required by `bindgen` when `regenerate-bindings` feature is active |
+
+SuiteSparse:GraphBLAS no longer needs to be installed system-wide. It is
+fetched, built statically, and linked into the binary by `pathrex-sys/build.rs`.
 
 ### Building
 
 ```bash
-# Ensure submodules are present
+# Ensure the LAGraph submodule is present
 git submodule update --init --recursive
 
-# Build and install SuiteSparse:GraphBLAS system-wide
-git clone --depth 1 https://github.com/DrTimothyAldenDavis/GraphBLAS.git
-cd GraphBLAS && make compact && sudo make install && cd ..
-
-# Build pathrex (LAGraph is built statically by pathrex-sys/build.rs)
+# Build pathrex. First cold build clones GraphBLAS and runs cmake; takes
+# ~2-10 minutes depending on core count. Subsequent builds reuse the
+# GraphBLAS source tree under target/.../graphblas-src/ and the cmake
+# build dir, so they are incremental.
 cargo build
 
-# Run tests
-LD_LIBRARY_PATH=/usr/local/lib cargo test --workspace
+# Run tests (no LD_LIBRARY_PATH needed — everything but the OpenMP
+# runtime is statically linked)
+cargo test --workspace
 ```
 
 ### How `pathrex-sys/build.rs` handles linking
 
-[`pathrex-sys/build.rs`](pathrex-sys/build.rs) performs two jobs:
+[`pathrex-sys/build.rs`](pathrex-sys/build.rs) performs three jobs:
 
-1. **Native build + linking.** It drives cmake against the `deps/LAGraph`
-   submodule and links the resulting static archives:
+1. **GraphBLAS fetch.** Clones SuiteSparse:GraphBLAS at the pin defined by
+   the `GRAPHBLAS_TAG` constant (currently `v10.3.1`) into
+   `$OUT_DIR/graphblas-src/` via `git clone --depth=1 --branch <tag>`. A
+   sentinel file `<dir>/.pathrex-fetched` containing the tag string marks
+   a completed clone; if the pin is bumped, the sentinel mismatches and
+   the clone is wiped and retried. If the directory exists without a
+   sentinel (interrupted earlier clone), it is also wiped before retrying.
 
-   - Runs `cmake` against `../deps/LAGraph` with `BUILD_STATIC_LIBS=ON`,
-     `BUILD_SHARED_LIBS=OFF`, `BUILD_TESTING=OFF`, `Release` profile. The
-     `cmake` crate places the install prefix under `$OUT_DIR`; the resulting
-     `liblagraph.a` and `liblagraphx.a` land in `$OUT_DIR/lib` (or
-     `$OUT_DIR/lib64` on Fedora-family distros — both candidates are probed).
-   - Emits `cargo:rustc-link-search=native=<libdir>` and
-     `cargo:rustc-link-lib=static=lagraphx` + `cargo:rustc-link-lib=static=lagraph`.
-     Order matters: `lagraphx` depends on utility symbols from `lagraph`, so
-     it precedes `lagraph` on the link line.
-   - Emits `cargo:rustc-link-lib=dylib=graphblas` and
-     `cargo:rustc-link-search=native=/usr/local/lib` so the system-installed
-     GraphBLAS shared library is picked up. (Phase 3 will fetch and build
-     GraphBLAS itself.)
-   - Emits the OpenMP runtime link directive: `gomp` + `m` on Linux,
-     `omp` on macOS, nothing explicit on Windows (MSVC handles it via
-     `/openmp`). Override via `RUSTFLAGS` if your toolchain ships a
-     different OpenMP runtime (e.g. `libomp` on Linux + clang).
+2. **Native build + linking.** Drives cmake twice — once for GraphBLAS,
+   once for the `deps/LAGraph` submodule:
 
-   LAGraph no longer needs to be built or installed manually. SuiteSparse:GraphBLAS
-   **must** still be installed system-wide (`sudo make install`).
+   - GraphBLAS flags: `BUILD_SHARED_LIBS=OFF`, `BUILD_STATIC_LIBS=ON`,
+     `GRAPHBLAS_BUILD_STATIC_LIBS=ON` (belt-and-braces),
+     `GRAPHBLAS_USE_JIT=OFF` (no runtime C compiler required),
+     `GRAPHBLAS_COMPACT=OFF` (full FactoryKernels for performance),
+     `GRAPHBLAS_USE_OPENMP=ON`, `GRAPHBLAS_USE_CUDA=OFF`,
+     `SUITESPARSE_DEMOS=OFF`, `BUILD_TESTING=OFF`, `Release` profile.
+   - LAGraph flags: `BUILD_SHARED_LIBS=OFF`, `BUILD_STATIC_LIBS=ON`,
+     `BUILD_TESTING=OFF`, plus `CMAKE_PREFIX_PATH=<graphblas_install>`
+     and `GRAPHBLAS_ROOT=<graphblas_install>` so LAGraph's
+     `find_package(GraphBLAS)` picks up our static build instead of any
+     system one.
+   - Static archives land in `$OUT_DIR/.../out/lib/` (or `lib64/` on
+     Fedora-family distros — both candidates are probed by `pick_libdir`).
+   - Emits `cargo:rustc-link-lib=static=lagraphx`,
+     `cargo:rustc-link-lib=static=lagraph`,
+     `cargo:rustc-link-lib=static=graphblas`. Order matters: `lagraphx`
+     references symbols from `lagraph`'s utility module; both reference
+     `graphblas`.
+   - Emits OS-specific runtime libraries: `gomp`+`pthread`+`dl`+`m` on
+     Linux, `omp`+`pthread` on macOS, nothing explicit on MSVC. Override
+     via `RUSTFLAGS` if your toolchain ships a different OpenMP runtime
+     (e.g. `libomp` on Linux + clang).
 
-   At **runtime** the OS dynamic linker (`ld.so`) does not use Cargo's link
-   search paths — it only consults `LD_LIBRARY_PATH`, `rpath`, and the system
-   library cache. Set `LD_LIBRARY_PATH=/usr/local/lib` so the dynamic
-   `libgraphblas.so` is resolved at test time. LAGraph itself is statically
-   linked, so no runtime path is needed for it.
+3. **docs.rs guard.** If the `DOCS_RS` environment variable is set, the
+   entire native build is skipped. docs.rs sandboxes block all network
+   access (so the `git clone` would fail) and have strict time/memory
+   limits; rustdoc only needs to compile Rust code, not link or execute
+   it.
 
-2. **Optional FFI binding regeneration** (feature `regenerate-bindings`).
-   When the feature is active, `regenerate_bindings()` runs `bindgen` against
-   `deps/LAGraph/include/LAGraph.h` and `deps/LAGraph/include/LAGraphX.h`
-   (always from the submodule — no system path search), plus `GraphBLAS.h`
-   (searched in `/usr/local/include/suitesparse` and
-   `/usr/include/suitesparse`). The generated Rust file is written to
-   [`pathrex-sys/src/lagraph_sys_generated.rs`](pathrex-sys/src/lagraph_sys_generated.rs).
+4. **Optional FFI binding regeneration** (feature `regenerate-bindings`).
+   When the feature is active, `regenerate_bindings()` runs `bindgen`
+   against `deps/LAGraph/include/LAGraph.h`,
+   `deps/LAGraph/include/LAGraphX.h`, and the GraphBLAS install tree's
+   `include/suitesparse/GraphBLAS.h`. The generated Rust file is written
+   to [`pathrex-sys/src/lagraph_sys_generated.rs`](pathrex-sys/src/lagraph_sys_generated.rs).
    Only a curated allowlist of GraphBLAS/LAGraph types and functions is
    exposed (see the `allowlist_*` calls in `pathrex-sys/build.rs`).
 
@@ -537,9 +550,13 @@ require the native libraries to be present.
 The GitHub Actions workflow ([`.github/workflows/ci.yml`](.github/workflows/ci.yml))
 runs on every push and PR across `stable`, `beta`, and `nightly` toolchains:
 
-1. Checks out with `submodules: recursive`.
-2. Installs cmake, libclang-dev, clang.
-3. Builds and installs SuiteSparse:GraphBLAS from source (`sudo make install`).
-4. Builds and installs LAGraph from the submodule (`sudo make install`).
-5. `cargo build --features regenerate-bindings` — rebuilds FFI bindings.
-6. `LD_LIBRARY_PATH=/usr/local/lib cargo test --verbose` — runs the full test suite.
+1. Checks out with `submodules: recursive` and `lfs: true`.
+2. Installs `cmake`, `libclang-dev`, `clang` via apt.
+3. `cargo build --workspace --features pathrex-sys/regenerate-bindings` —
+   `pathrex-sys/build.rs` clones GraphBLAS at the pinned tag, builds it
+   statically, builds LAGraph statically against it, and regenerates FFI
+   bindings.
+4. `cargo test --workspace --verbose` — runs the full test suite. No
+   `LD_LIBRARY_PATH` is needed because GraphBLAS and LAGraph are linked
+   statically; only the OpenMP runtime (`libgomp`) is dynamic and is
+   already on the default loader path.
