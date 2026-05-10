@@ -32,7 +32,11 @@ const GRAPHBLAS_REPO: &str = "https://github.com/DrTimothyAldenDavis/GraphBLAS.g
 const GRAPHBLAS_TAG: &str = "v10.3.1";
 
 /// LAGraph submodule path, relative to this crate's manifest dir.
-const LAGRAPH_REL_PATH: &str = "../deps/LAGraph";
+///
+/// Lives inside the `pathrex-sys` crate so that `cargo package` includes
+/// it in the published `.crate` archive (cargo only ships files within
+/// the package directory).
+const LAGRAPH_REL_PATH: &str = "deps/LAGraph";
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");

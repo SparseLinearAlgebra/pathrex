@@ -42,7 +42,7 @@ pathrex/
 │   ├── mm_tests.rs             # Integration tests for MatrixMarket format
 │   ├── nfarpq_tests.rs         # Integration tests for NfaRpqEvaluator
 │   └── rpqmatrix_tests.rs      # Integration tests for matrix-plan RPQ evaluator
-├── deps/
+├── pathrex-sys/deps/
 │   └── LAGraph/                # Git submodule (SparseLinearAlgebra/LAGraph)
 └── .github/workflows/ci.yml   # CI: build GraphBLAS + LAGraph, cargo build & test
 ```
@@ -92,7 +92,7 @@ cargo test --workspace
    sentinel (interrupted earlier clone), it is also wiped before retrying.
 
 2. **Native build + linking.** Drives cmake twice — once for GraphBLAS,
-   once for the `deps/LAGraph` submodule:
+   once for the `pathrex-sys/deps/LAGraph` submodule:
 
    - GraphBLAS flags: `BUILD_SHARED_LIBS=OFF`, `BUILD_STATIC_LIBS=ON`,
      `GRAPHBLAS_BUILD_STATIC_LIBS=ON` (belt-and-braces),
