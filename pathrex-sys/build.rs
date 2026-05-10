@@ -1,13 +1,17 @@
 #[cfg(feature = "regenerate-bindings")]
 use std::path::PathBuf;
 
+// LAGraph submodule lives at the workspace root, one level above this crate.
+const LAGRAPH_BUILD_SRC: &str = "../deps/LAGraph/build/src";
+const LAGRAPH_BUILD_EXPERIMENTAL: &str = "../deps/LAGraph/build/experimental";
+
 fn main() {
     println!("cargo:rustc-link-lib=dylib=graphblas");
     println!("cargo:rustc-link-search=native=/usr/local/lib");
     println!("cargo:rustc-link-lib=dylib=lagraph");
-    println!("cargo:rustc-link-search=native=deps/LAGraph/build/src");
+    println!("cargo:rustc-link-search=native={LAGRAPH_BUILD_SRC}");
     println!("cargo:rustc-link-lib=dylib=lagraphx");
-    println!("cargo:rustc-link-search=native=deps/LAGraph/build/experimental");
+    println!("cargo:rustc-link-search=native={LAGRAPH_BUILD_EXPERIMENTAL}");
 
     // ---- Bindgen (only with `regenerate-bindings` feature) ----
     #[cfg(feature = "regenerate-bindings")]
@@ -19,8 +23,8 @@ fn main() {
 #[cfg(feature = "regenerate-bindings")]
 fn regenerate_bindings() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-
-    let lagraph_include = manifest_dir.join("deps/LAGraph/include");
+    // LAGraph submodule is a sibling of the pathrex-sys crate dir.
+    let lagraph_include = manifest_dir.join("../deps/LAGraph/include");
     assert!(
         lagraph_include.join("LAGraph.h").exists(),
         "LAGraph.h not found at {}.\n\

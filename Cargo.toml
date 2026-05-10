@@ -1,38 +1,9 @@
-[package]
-name = "pathrex"
-version = "0.1.0"
+[workspace]
+resolver = "2"
+members = ["pathrex-sys", "pathrex"]
+
+[workspace.package]
 edition = "2024"
-
-[dependencies]
-csv = "1.4.0"
-egg = "0.10.0"
-libc = "0.2"
-memmap2 = "0.9"
-oxrdf = "0.3.3"
-oxttl = "0.2.3"
-rayon = "1"
-rustfst = "1.2"
-spargebra = "0.4.6"
-thiserror = "1.0"
-
-clap = { version = "4", features = ["derive"], optional = true }
-serde = { version = "1", features = ["derive"], optional = true }
-serde_json = { version = "1", optional = true }
-chrono = { version = "0.4", features = ["serde"], optional = true }
-criterion = { version = "0.5", optional = true }
-tempfile = { version = "3", optional = true }
-
-[features]
-regenerate-bindings = ["bindgen"]
-bench = ["clap", "serde", "serde_json", "chrono", "criterion", "tempfile"]
-
-[dev-dependencies]
-tempfile = "3"
-
-[build-dependencies]
-bindgen = { version = "0.71", optional = true }
-
-[[bin]]
-name = "pathrex"
-path = "src/bin/pathrex.rs"
-required-features = ["bench"]
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/SparseLinearAlgebra/pathrex"
+authors = ["Pathrex contributors"]
