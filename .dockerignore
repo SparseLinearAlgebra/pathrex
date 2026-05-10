@@ -1,8 +1,20 @@
 .git/
 .worktrees/
+.opencode/
 target/
 .tmp/
-deps/LAGraph/build/
+practice-templates/
+la-n-egg-rpq/
+
+# Local-only graph datasets (gitignored too; never needed in image)
+pathrex/tests/testdata/la-rpq/
+pathrex/tests/testdata/wikidata/
+pathrex/tests/testdata/yago/
+
+# LAGraph in-tree build artifacts (the cmake-rs build uses $OUT_DIR)
+pathrex-sys/deps/LAGraph/build/
+
+# Benchmark output
 bench_criterion/
 bench_results.json
 bench_checkpoint.json

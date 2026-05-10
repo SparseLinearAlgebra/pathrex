@@ -22,19 +22,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake libclang-dev clang
 
-      - name: Build and install SuiteSparse:GraphBLAS
-        run: |
-          git clone --depth 1 https://github.com/DrTimothyAldenDavis/GraphBLAS.git
-          cd GraphBLAS
-          make compact
-          sudo make install
-
-      - name: Build and install LAGraph
-        run: |
-          cd deps/LAGraph
-          make
-          sudo make install
-
       - name: Install Rust toolchain (stable)
         run: |
           rustup update stable
@@ -67,24 +54,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake libclang-dev clang
 
-      - name: Build and install SuiteSparse:GraphBLAS
-        run: |
-          git clone --depth 1 https://github.com/DrTimothyAldenDavis/GraphBLAS.git
-          cd GraphBLAS
-          make compact
-          sudo make install
-
-      - name: Build and install LAGraph
-        run: |
-          cd deps/LAGraph
-          make
-          sudo make install
-
       - name: Install Rust toolchain
         run: rustup update ${{ matrix.toolchain }} && rustup default ${{ matrix.toolchain }}
 
       - name: Build (with regenerated bindings)
-        run: cargo build --features regenerate-bindings --verbose
+        run: cargo build --workspace --features pathrex-sys/regenerate-bindings --verbose
 
       - name: Test
-        run: LD_LIBRARY_PATH=/usr/local/lib cargo test --verbose
+        run: cargo test --workspace --verbose

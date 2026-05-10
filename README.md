@@ -1,10 +1,15 @@
 # pathrex
 
+[![Crates.io](https://img.shields.io/crates/v/pathrex.svg)](https://crates.io/crates/pathrex)
+[![Docs.rs](https://docs.rs/pathrex/badge.svg)](https://docs.rs/pathrex)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/SparseLinearAlgebra/pathrex/actions/workflows/ci.yml/badge.svg)](https://github.com/SparseLinearAlgebra/pathrex/actions/workflows/ci.yml)
 [![Container](https://img.shields.io/badge/ghcr.io-pathrex-blue?logo=docker)](https://github.com/SparseLinearAlgebra/pathrex/pkgs/container/pathrex)
+[![Docker Hub](https://img.shields.io/docker/v/vanyaglazunov/pathrex?label=docker.io&logo=docker)](https://hub.docker.com/r/vanyaglazunov/pathrex)
 
 **Pathrex** is a Rust library and CLI for evaluating and benchmarking
 **Path Queries** over edge-labeled graphs.
+
 ## Features
 
 - **Two RPQ evaluators** out of the box:
@@ -117,4 +122,4 @@ q2,?x (<a>|<b>)+ ?y
 
 ## License
 
-See [`LICENSE`](LICENSE).
+Licensed under the MIT License. See [`LICENSE`](LICENSE).
