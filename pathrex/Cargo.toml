@@ -16,9 +16,6 @@ include = [
     "Cargo.toml",
     "../README.md",
     "src/**/*.rs",
-    "tests/**/*.rs",
-    "tests/testdata/mm_graph/**",
-    "tests/testdata/cases/**",
 ]
 
 [dependencies]
