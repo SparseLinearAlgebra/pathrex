@@ -565,8 +565,13 @@ runs on every push and PR across `stable`, `beta`, and `nightly` toolchains:
 
 Pushing a `v*.*.*` tag triggers [`.github/workflows/release.yml`](.github/workflows/release.yml):
 
-1. **`docker` job** — builds the GHCR image and pushes
-   `ghcr.io/sparselinearalgebra/pathrex:<tag>` plus `latest`.
+1. **`docker` job** — builds the image once and pushes the same tags
+   (`{version}`, `{major}.{minor}`, `{major}`, `latest`) to two
+   registries:
+   - `ghcr.io/sparselinearalgebra/pathrex` (authenticated via
+     `GITHUB_TOKEN`, no extra setup needed).
+   - `docker.io/vanyaglazunov/pathrex` (authenticated via
+     `DOCKERHUB_USERNAME` + `DOCKERHUB_TOKEN` repository secrets).
 2. **`publish-crates` job** — publishes both crates to crates.io in the
    correct order:
    - Reads `pathrex-sys` version via `cargo metadata`.
