@@ -29,12 +29,6 @@ jobs:
           make compact
           sudo make install
 
-      - name: Build and install LAGraph
-        run: |
-          cd deps/LAGraph
-          make
-          sudo make install
-
       - name: Install Rust toolchain (stable)
         run: |
           rustup update stable
@@ -72,12 +66,6 @@ jobs:
           git clone --depth 1 https://github.com/DrTimothyAldenDavis/GraphBLAS.git
           cd GraphBLAS
           make compact
-          sudo make install
-
-      - name: Build and install LAGraph
-        run: |
-          cd deps/LAGraph
-          make
           sudo make install
 
       - name: Install Rust toolchain

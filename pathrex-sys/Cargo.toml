@@ -13,4 +13,5 @@ default = []
 regenerate-bindings = ["dep:bindgen"]
 
 [build-dependencies]
+cmake = "0.1"
 bindgen = { version = "0.71", optional = true }

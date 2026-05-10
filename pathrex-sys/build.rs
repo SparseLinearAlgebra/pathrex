@@ -1,17 +1,27 @@
-#[cfg(feature = "regenerate-bindings")]
-use std::path::PathBuf;
+use std::env;
+use std::path::{Path, PathBuf};
 
-// LAGraph submodule lives at the workspace root, one level above this crate.
-const LAGRAPH_BUILD_SRC: &str = "../deps/LAGraph/build/src";
-const LAGRAPH_BUILD_EXPERIMENTAL: &str = "../deps/LAGraph/build/experimental";
+#[cfg(feature = "regenerate-bindings")]
+use std::path::PathBuf as _BindgenPathBuf;
+
+// LAGraph submodule path, relative to this crate's manifest dir.
+const LAGRAPH_REL_PATH: &str = "../deps/LAGraph";
 
 fn main() {
-    println!("cargo:rustc-link-lib=dylib=graphblas");
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let lagraph_src = manifest_dir.join(LAGRAPH_REL_PATH);
+
+    assert_lagraph_submodule_present(&lagraph_src);
+
+    // Build LAGraph cmake and emit static link directives for
+    // liblagraph.a + liblagraphx.a.
+    build_lagraph_static(&lagraph_src);
+
     println!("cargo:rustc-link-search=native=/usr/local/lib");
-    println!("cargo:rustc-link-lib=dylib=lagraph");
-    println!("cargo:rustc-link-search=native={LAGRAPH_BUILD_SRC}");
-    println!("cargo:rustc-link-lib=dylib=lagraphx");
-    println!("cargo:rustc-link-search=native={LAGRAPH_BUILD_EXPERIMENTAL}");
+    println!("cargo:rustc-link-lib=dylib=graphblas");
+
+    // System libraries needed by the static LAGraph archives.
+    link_openmp_and_libm();
 
     // ---- Bindgen (only with `regenerate-bindings` feature) ----
     #[cfg(feature = "regenerate-bindings")]
@@ -20,9 +30,92 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 }
 
+/// Bail with a error message if `deps/LAGraph` is empty
+fn assert_lagraph_submodule_present(lagraph_src: &Path) {
+    let marker = lagraph_src.join("CMakeLists.txt");
+    if !marker.exists() {
+        panic!(
+            "LAGraph submodule not initialized: {} does not exist.\n\
+             Run: git submodule update --init --recursive",
+            marker.display()
+        );
+    }
+}
+
+/// Drive cmake against `deps/LAGraph`, producing `liblagraph.a` and
+/// `liblagraphx.a` under `$OUT_DIR/lib` (or `$OUT_DIR/lib64`).
+///
+/// Static link order matters: `lagraphx` depends on symbols from `lagraph`'s
+/// utility module (e.g. `LAGraph_New`, `LAGraph_MMRead`), so it must precede
+/// `lagraph` in the linker invocation. `graphblas` is appended separately by
+/// the caller.
+fn build_lagraph_static(lagraph_src: &Path) {
+    let dst = cmake::Config::new(lagraph_src)
+        .define("BUILD_SHARED_LIBS", "OFF")
+        .define("BUILD_STATIC_LIBS", "ON")
+        .define("BUILD_TESTING", "OFF")
+        .profile("Release")
+        .define("SUITESPARSE_USE_OPENMP", "ON")
+        .build();
+
+    // cmake-rs installs into `dst/lib` on most systems but some distros
+    // (Fedora, openSUSE, RHEL) use `lib64`. Try both.
+    let candidates = [dst.join("lib"), dst.join("lib64")];
+    let libdir = candidates
+        .iter()
+        .find(|p| p.join("liblagraph.a").exists())
+        .unwrap_or_else(|| {
+            panic!(
+                "LAGraph build succeeded but liblagraph.a was not found in any of: {:?}",
+                candidates
+            )
+        });
+
+    println!("cargo:rustc-link-search=native={}", libdir.display());
+    // Order: lagraphx → lagraph → graphblas (caller).
+    println!("cargo:rustc-link-lib=static=lagraphx");
+    println!("cargo:rustc-link-lib=static=lagraph");
+
+    // Re-run the build script if the LAGraph sources or CMakeLists change.
+    for sub in ["CMakeLists.txt", "src", "experimental", "include"] {
+        println!("cargo:rerun-if-changed={}", lagraph_src.join(sub).display());
+    }
+}
+
+/// Link OpenMP (`libgomp` on Linux with GCC, `libomp` on macOS Homebrew clang)
+/// and libm
+fn link_openmp_and_libm() {
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    match target_os.as_str() {
+        "linux" => {
+            // Default to gomp;
+            // users on a pure-clang/libomp toolchain can override with RUSTFLAGS.
+            println!("cargo:rustc-link-lib=dylib=gomp");
+            println!("cargo:rustc-link-lib=dylib=m");
+        }
+        "macos" => {
+            println!("cargo:rustc-link-lib=dylib=omp");
+        }
+        "windows" => {
+            // MSVC's OpenMP runtime is selected via /openmp at compile time
+            // and linked implicitly. Nothing to emit here.
+        }
+        other => {
+            // For BSDs and other targets, fall back to libgomp (most likely
+            // available through gcc). Override with RUSTFLAGS if wrong.
+            eprintln!(
+                "warning: pathrex-sys: unknown target OS '{other}', \
+                 defaulting OpenMP runtime to libgomp"
+            );
+            println!("cargo:rustc-link-lib=dylib=gomp");
+            println!("cargo:rustc-link-lib=dylib=m");
+        }
+    }
+}
+
 #[cfg(feature = "regenerate-bindings")]
 fn regenerate_bindings() {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let manifest_dir = _BindgenPathBuf::from(env!("CARGO_MANIFEST_DIR"));
     // LAGraph submodule is a sibling of the pathrex-sys crate dir.
     let lagraph_include = manifest_dir.join("../deps/LAGraph/include");
     assert!(
@@ -33,8 +126,8 @@ fn regenerate_bindings() {
     );
 
     let graphblas_include = [
-        PathBuf::from("/usr/local/include/suitesparse"),
-        PathBuf::from("/usr/include/suitesparse"),
+        _BindgenPathBuf::from("/usr/local/include/suitesparse"),
+        _BindgenPathBuf::from("/usr/include/suitesparse"),
     ]
     .into_iter()
     .find(|p| p.join("GraphBLAS.h").exists())

@@ -68,52 +68,56 @@ git submodule update --init --recursive
 git clone --depth 1 https://github.com/DrTimothyAldenDavis/GraphBLAS.git
 cd GraphBLAS && make compact && sudo make install && cd ..
 
-# Build LAGraph inside the submodule (no system-wide install required)
-cd deps/LAGraph && make && cd ../..
-
-# Build pathrex
+# Build pathrex (LAGraph is built statically by pathrex-sys/build.rs)
 cargo build
 
 # Run tests
-LD_LIBRARY_PATH=deps/LAGraph/build/src:deps/LAGraph/build/experimental:/usr/local/lib cargo test
+LD_LIBRARY_PATH=/usr/local/lib cargo test --workspace
 ```
 
-### How `build.rs` handles linking
+### How `pathrex-sys/build.rs` handles linking
 
-[`build.rs`](build.rs) performs two jobs:
+[`pathrex-sys/build.rs`](pathrex-sys/build.rs) performs two jobs:
 
-1. **Native linking.** It emits six Cargo directives:
-   - `cargo:rustc-link-lib=dylib=graphblas` — dynamically links `libgraphblas`.
-   - `cargo:rustc-link-search=native=/usr/local/lib` — adds the system GraphBLAS
-     install path to the native library search path.
-   - `cargo:rustc-link-lib=dylib=lagraph` — dynamically links `liblagraph`.
-   - `cargo:rustc-link-search=native=deps/LAGraph/build/src` — adds the
-     submodule's core build output to the native library search path.
-   - `cargo:rustc-link-lib=dylib=lagraphx` — dynamically links `liblagraphx`
-     (experimental algorithms).
-   - `cargo:rustc-link-search=native=deps/LAGraph/build/experimental` —
-     adds the experimental build output to the native library search path.
+1. **Native build + linking.** It drives cmake against the `deps/LAGraph`
+   submodule and links the resulting static archives:
 
-   LAGraph does **not** need to be installed system-wide; building the submodule
-   in `deps/LAGraph/` is sufficient for compilation and linking.
-   SuiteSparse:GraphBLAS **must** be installed system-wide (`sudo make install`).
+   - Runs `cmake` against `../deps/LAGraph` with `BUILD_STATIC_LIBS=ON`,
+     `BUILD_SHARED_LIBS=OFF`, `BUILD_TESTING=OFF`, `Release` profile. The
+     `cmake` crate places the install prefix under `$OUT_DIR`; the resulting
+     `liblagraph.a` and `liblagraphx.a` land in `$OUT_DIR/lib` (or
+     `$OUT_DIR/lib64` on Fedora-family distros — both candidates are probed).
+   - Emits `cargo:rustc-link-search=native=<libdir>` and
+     `cargo:rustc-link-lib=static=lagraphx` + `cargo:rustc-link-lib=static=lagraph`.
+     Order matters: `lagraphx` depends on utility symbols from `lagraph`, so
+     it precedes `lagraph` on the link line.
+   - Emits `cargo:rustc-link-lib=dylib=graphblas` and
+     `cargo:rustc-link-search=native=/usr/local/lib` so the system-installed
+     GraphBLAS shared library is picked up. (Phase 3 will fetch and build
+     GraphBLAS itself.)
+   - Emits the OpenMP runtime link directive: `gomp` + `m` on Linux,
+     `omp` on macOS, nothing explicit on Windows (MSVC handles it via
+     `/openmp`). Override via `RUSTFLAGS` if your toolchain ships a
+     different OpenMP runtime (e.g. `libomp` on Linux + clang).
+
+   LAGraph no longer needs to be built or installed manually. SuiteSparse:GraphBLAS
+   **must** still be installed system-wide (`sudo make install`).
 
    At **runtime** the OS dynamic linker (`ld.so`) does not use Cargo's link
    search paths — it only consults `LD_LIBRARY_PATH`, `rpath`, and the system
-   library cache. Set `LD_LIBRARY_PATH=/usr/local/lib` after a system-wide
-   LAGraph install, or include the submodule build paths if not installing
-   system-wide.
+   library cache. Set `LD_LIBRARY_PATH=/usr/local/lib` so the dynamic
+   `libgraphblas.so` is resolved at test time. LAGraph itself is statically
+   linked, so no runtime path is needed for it.
 
 2. **Optional FFI binding regeneration** (feature `regenerate-bindings`).
-   When the feature is active, [`regenerate_bindings()`](build.rs:20) runs
-   `bindgen` against `deps/LAGraph/include/LAGraph.h` and
-   `deps/LAGraph/include/LAGraphX.h` (always from the submodule — no system
-   path search), plus `GraphBLAS.h` (searched in
-   `/usr/local/include/suitesparse` and `/usr/include/suitesparse`). The
-   generated Rust file is written to
-   [`src/lagraph_sys_generated.rs`](src/lagraph_sys_generated.rs). Only a
-   curated allowlist of GraphBLAS/LAGraph types and functions is exposed
-   (see the `allowlist_*` calls in [`build.rs`](build.rs:59)).
+   When the feature is active, `regenerate_bindings()` runs `bindgen` against
+   `deps/LAGraph/include/LAGraph.h` and `deps/LAGraph/include/LAGraphX.h`
+   (always from the submodule — no system path search), plus `GraphBLAS.h`
+   (searched in `/usr/local/include/suitesparse` and
+   `/usr/include/suitesparse`). The generated Rust file is written to
+   [`pathrex-sys/src/lagraph_sys_generated.rs`](pathrex-sys/src/lagraph_sys_generated.rs).
+   Only a curated allowlist of GraphBLAS/LAGraph types and functions is
+   exposed (see the `allowlist_*` calls in `pathrex-sys/build.rs`).
 
 ### Feature flags
 
