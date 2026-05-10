@@ -77,7 +77,6 @@ fn assert_lagraph_submodule_present(lagraph_src: &Path) {
     }
 }
 
-
 /// Clone SuiteSparse:GraphBLAS at [`GRAPHBLAS_TAG`] into
 /// `$OUT_DIR/graphblas-src/`. Returns the path to the source tree.
 ///
@@ -117,9 +116,7 @@ fn fetch_graphblas(out_dir: &Path) -> PathBuf {
         });
     }
 
-    eprintln!(
-        "pathrex-sys: cloning GraphBLAS {GRAPHBLAS_TAG} into {src_dir:#?}"
-    );
+    eprintln!("pathrex-sys: cloning GraphBLAS {GRAPHBLAS_TAG} into {src_dir:#?}");
 
     let status = Command::new("git")
         .args([

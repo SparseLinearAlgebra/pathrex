@@ -117,4 +117,4 @@ q2,?x (<a>|<b>)+ ?y
 
 ## License
 
-See [`LICENSE`](LICENSE).
+Licensed under the MIT License. See [`LICENSE`](LICENSE).

@@ -2,10 +2,24 @@
 name = "pathrex"
 version = "0.1.0"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 authors.workspace = true
 description = "Library and CLI for benchmarking RPQ/CFL queries on edge-labeled graphs via SuiteSparse:GraphBLAS and LAGraph."
+documentation = "https://docs.rs/pathrex"
+readme = "../README.md"
+categories = ["algorithms", "science", "database", "command-line-utilities"]
+keywords = ["graph", "sparql", "rpq", "graphblas", "benchmark"]
+include = [
+    "Cargo.toml",
+    "../README.md",
+    "src/**/*.rs",
+    "tests/**/*.rs",
+    "tests/testdata/mm_graph/**",
+    "tests/testdata/cases/**",
+]
 
 [dependencies]
 pathrex-sys = { version = "0.1", path = "../pathrex-sys" }
@@ -39,3 +53,6 @@ tempfile = "3"
 name = "pathrex"
 path = "src/bin/pathrex.rs"
 required-features = ["bench"]
+
+[package.metadata.docs.rs]
+features = ["bench"]

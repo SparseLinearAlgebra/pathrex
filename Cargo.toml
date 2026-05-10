@@ -4,6 +4,8 @@ members = ["pathrex-sys", "pathrex"]
 
 [workspace.package]
 edition = "2024"
-license = "Apache-2.0 OR MIT"
+rust-version = "1.85"
+license = "MIT"
 repository = "https://github.com/SparseLinearAlgebra/pathrex"
+homepage = "https://github.com/SparseLinearAlgebra/pathrex"
 authors = ["Pathrex contributors"]

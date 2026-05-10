@@ -2,11 +2,33 @@
 name = "pathrex-sys"
 version = "0.1.0"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 authors.workspace = true
 description = "Native FFI bindings for SuiteSparse:GraphBLAS and LAGraph used by the pathrex crate."
+documentation = "https://docs.rs/pathrex-sys"
+readme = "README.md"
+categories = ["external-ffi-bindings", "science"]
+keywords = ["graphblas", "lagraph", "suitesparse", "ffi", "sys"]
 links = "lagraph"
+include = [
+    "Cargo.toml",
+    "build.rs",
+    "README.md",
+    "src/**/*.rs",
+    # LAGraph submodule source tree (cmake-built by build.rs).
+    # Excludes data sets, papers, generated docs, Docker assets, and tests
+    "deps/LAGraph/CMakeLists.txt",
+    "deps/LAGraph/LICENSE",
+    "deps/LAGraph/cmake_modules/**",
+    "deps/LAGraph/Config/**",
+    "deps/LAGraph/include/**",
+    "deps/LAGraph/src/**",
+    "deps/LAGraph/experimental/**",
+    "deps/LAGraph/deps/json_h/**",
+]
 
 [features]
 default = []
@@ -15,3 +37,6 @@ regenerate-bindings = ["dep:bindgen"]
 [build-dependencies]
 cmake = "0.1"
 bindgen = { version = "0.71", optional = true }
+
+[package.metadata.docs.rs]
+no-default-features = true
