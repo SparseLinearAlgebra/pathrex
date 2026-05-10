@@ -560,3 +560,27 @@ runs on every push and PR across `stable`, `beta`, and `nightly` toolchains:
    `LD_LIBRARY_PATH` is needed because GraphBLAS and LAGraph are linked
    statically; only the OpenMP runtime (`libgomp`) is dynamic and is
    already on the default loader path.
+
+## Releasing
+
+Pushing a `v*.*.*` tag triggers [`.github/workflows/release.yml`](.github/workflows/release.yml):
+
+1. **`docker` job** — builds the GHCR image and pushes
+   `ghcr.io/sparselinearalgebra/pathrex:<tag>` plus `latest`.
+2. **`publish-crates` job** — publishes both crates to crates.io in the
+   correct order:
+   - Reads `pathrex-sys` version via `cargo metadata`.
+   - Skips publishing `pathrex-sys` if that version is already on the
+     registry (allows re-tagging when only `pathrex` changed).
+   - Polls `cargo search` until the new `pathrex-sys` is indexed
+     (up to 5 minutes), then publishes `pathrex` against it.
+   - Requires the `CARGO_REGISTRY_TOKEN` repository secret.
+
+### Manual dry-run
+
+To verify the publish path without uploading:
+
+```bash
+cargo publish --dry-run -p pathrex-sys
+# (pathrex dry-run requires pathrex-sys to be on crates.io first)
+```

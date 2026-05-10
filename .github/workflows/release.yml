@@ -54,3 +54,65 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  publish-crates:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          lfs: true
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake libclang-dev clang
+
+      - name: Install Rust toolchain (stable)
+        run: |
+          rustup update stable
+          rustup default stable
+
+      - name: Read pathrex-sys version
+        id: sys_version
+        run: |
+          ver=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "pathrex-sys") | .version')
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "pathrex-sys version: $ver"
+
+      - name: Publish pathrex-sys (if not already published)
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          SYS_VERSION: ${{ steps.sys_version.outputs.version }}
+        run: |
+          if cargo search pathrex-sys --limit 1 \
+              | grep -q "^pathrex-sys = \"${SYS_VERSION}\""; then
+            echo "pathrex-sys ${SYS_VERSION} already on crates.io, skipping"
+          else
+            cargo publish -p pathrex-sys
+          fi
+
+      - name: Wait for pathrex-sys to appear on crates.io
+        env:
+          SYS_VERSION: ${{ steps.sys_version.outputs.version }}
+        # crates.io publishes update the sparse index within seconds, but the
+        # exact propagation time is unpredictable. Poll up to 5 minutes.
+        run: |
+          for i in $(seq 1 30); do
+            if cargo search pathrex-sys --limit 1 \
+                | grep -q "^pathrex-sys = \"${SYS_VERSION}\""; then
+              echo "pathrex-sys ${SYS_VERSION} is live on crates.io"
+              exit 0
+            fi
+            echo "attempt $i: pathrex-sys ${SYS_VERSION} not yet indexed, sleeping 10s"
+            sleep 10
+          done
+          echo "pathrex-sys ${SYS_VERSION} did not appear on crates.io within 5 minutes" >&2
+          exit 1
+
+      - name: Publish pathrex
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p pathrex
