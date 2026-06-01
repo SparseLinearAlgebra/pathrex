@@ -10,6 +10,10 @@
 **Pathrex** is a Rust library and CLI for evaluating and benchmarking
 **Path Queries** over edge-labeled graphs.
 
+## Architecture
+
+[Architecture diagram](docs/arc.png)
+
 ## Features
 
 - **Two RPQ evaluators** out of the box:
