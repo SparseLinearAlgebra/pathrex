@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::{collections::HashMap, io::Read};
 
+use libc::uinput_setup;
 use rayon::prelude::*;
 
 use crate::formats::mm::{apply_base_iri, parse_index_map};
@@ -42,6 +43,7 @@ pub struct InMemoryBuilder {
     next_id: usize,
     label_buffers: HashMap<String, Vec<(usize, usize)>>,
     prebuilt: HashMap<String, LagraphGraph>,
+    metadata: HashMap<String, MatrixMetadata>,
 }
 
 impl InMemoryBuilder {
@@ -52,6 +54,7 @@ impl InMemoryBuilder {
             next_id: 0,
             label_buffers: HashMap::new(),
             prebuilt: HashMap::new(),
+            metadata: HashMap::new(),
         }
     }
 
@@ -111,6 +114,14 @@ impl InMemoryBuilder {
     ) {
         self.prebuilt.extend(iter);
     }
+
+    /// Bulk-install pre-wrapped `(label, MatrixMetadata)` pairs into `metadata`.
+    pub(crate) fn extend_metadata<I: IntoIterator<Item = (String, MatrixMetadata)>>(
+        &mut self,
+        iter: I,
+    ) {
+        self.metadata.extend(iter);
+    }
 }
 
 impl GraphBuilder for InMemoryBuilder {
@@ -162,11 +173,13 @@ impl GraphBuilder for InMemoryBuilder {
         for (label, lg) in built {
             graphs.insert(label, Arc::new(lg));
         }
-
         Ok(InMemoryGraph {
             node_to_id: self.node_to_id,
             id_to_node: self.id_to_node,
             graphs,
+            metadata: GraphMetadata {
+                label_to_data: self.metadata,
+            },
         })
     }
 }
@@ -176,6 +189,17 @@ pub struct InMemoryGraph {
     node_to_id: HashMap<String, usize>,
     id_to_node: HashMap<usize, String>,
     graphs: HashMap<String, Arc<LagraphGraph>>,
+    metadata: GraphMetadata,
+}
+
+pub struct GraphMetadata {
+    label_to_data: HashMap<String, MatrixMetadata>,
+}
+pub struct MatrixMetadata {
+    dimension: usize,
+    nonzero_rows: usize,
+    nonzero_cols: usize,
+    nvals: usize,
 }
 
 impl GraphDecomposition for InMemoryGraph {
@@ -244,22 +268,39 @@ impl GraphSource<InMemoryBuilder> for MatrixMarket {
         let _scope = ThreadScope::enter(outer, inner)?;
 
         let mm_dir = self.dir.clone();
-        let loaded: Vec<(String, LagraphGraph)> = edge_by_idx
+        let loaded: Vec<(String, LagraphGraph, MatrixMetadata)> = edge_by_idx
             .into_par_iter()
             .map(
-                |(idx, label)| -> Result<(String, LagraphGraph), GraphError> {
+                |(idx, label)| -> Result<(String, LagraphGraph, MatrixMetadata), GraphError> {
                     let path = mm_dir.join(format!("{}.txt", idx));
                     let matrix = load_mm_file(&path)?;
                     let lg = LagraphGraph::from_matrix(
                         matrix,
                         LAGraph_Kind::LAGraph_ADJACENCY_DIRECTED,
                     )?;
-                    Ok((label, lg))
+                    let dimension = lg.dimension()?;
+                    let nonzero_rows = lg.nonzero_rows()?;
+                    let nonzero_cols = lg.nonzero_cols()?;
+                    let nvals = lg.nvals()?;
+                    let metadata = MatrixMetadata {
+                        dimension: dimension as usize,
+                        nonzero_rows: nonzero_rows,
+                        nonzero_cols: nonzero_cols,
+                        nvals: nvals as usize,
+                    };
+                    Ok((label, lg, metadata))
                 },
             )
             .collect::<Result<Vec<_>, GraphError>>()?;
 
-        builder.extend_prebuilt(loaded);
+        let mut loaded_graphs = vec![];
+        let mut loaded_metadata = vec![];
+        for (_i, (name, graph, meta)) in loaded.into_iter().enumerate() {
+            loaded_graphs.push((name.clone(), graph));
+            loaded_metadata.push((name, meta));
+        }
+        builder.extend_prebuilt(loaded_graphs);
+        builder.extend_metadata(loaded_metadata);
 
         Ok(builder)
     }

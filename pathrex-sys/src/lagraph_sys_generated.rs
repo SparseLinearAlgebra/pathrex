@@ -159,6 +159,9 @@ unsafe extern "C" {
     pub fn GrB_Matrix_dup(C: *mut GrB_Matrix, A: GrB_Matrix) -> GrB_Info;
 }
 unsafe extern "C" {
+    pub fn GrB_Matrix_nrows(nrows: *mut GrB_Index, A: GrB_Matrix) -> GrB_Info;
+}
+unsafe extern "C" {
     pub fn GrB_Matrix_nvals(nvals: *mut GrB_Index, A: GrB_Matrix) -> GrB_Info;
 }
 unsafe extern "C" {

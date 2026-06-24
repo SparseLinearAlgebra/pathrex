@@ -11,7 +11,11 @@ use std::os::fd::IntoRawFd;
 use std::path::Path;
 use std::sync::Once;
 
-use crate::{grb_ok, la_ok, lagraph_sys::*};
+use crate::{
+    graph::wrappers::ReduceType::{ByCols, ByRows},
+    grb_ok, la_ok,
+    lagraph_sys::*,
+};
 
 use super::GraphError;
 
@@ -69,6 +73,10 @@ impl Drop for ThreadScope {
     }
 }
 
+enum ReduceType {
+    ByRows,
+    ByCols,
+}
 #[derive(Debug)]
 pub struct LagraphGraph {
     pub(crate) inner: LAGraph_Graph,
@@ -147,6 +155,17 @@ impl LagraphGraph {
         unsafe { la_ok!(LAGraph_CheckGraph(self.inner)) }
     }
 
+    /// Number of rows and cols in the underlying adjacency matrix.
+    pub fn dimension(&self) -> Result<GrB_Index, GraphError> {
+        if self.inner.is_null() {
+            return Ok(0);
+        }
+        let matrix: GrB_Matrix = unsafe { (*self.inner).A };
+        let mut dimension: GrB_Index = 0;
+        unsafe { grb_ok!(GrB_Matrix_nrows(&mut dimension, matrix))? };
+        Ok(dimension)
+    }
+
     /// Number of stored (non-zero) values in the underlying adjacency matrix.
     pub fn nvals(&self) -> Result<GrB_Index, GraphError> {
         if self.inner.is_null() {
@@ -156,6 +175,20 @@ impl LagraphGraph {
         let mut nvals: GrB_Index = 0;
         unsafe { grb_ok!(GrB_Matrix_nvals(&mut nvals, matrix))? };
         Ok(nvals)
+    }
+
+    pub fn nonzero_cols(&self) -> Result<usize, GraphError> {
+        let matrix: GrB_Matrix = unsafe { (*self.inner).A };
+        let res: usize = 0;
+        unsafe { LAGraph_RPQMatrix_reduce(&mut (res as u64), matrix, ByRows as u8) };
+        Ok(res)
+    }
+
+    pub fn nonzero_rows(&self) -> Result<usize, GraphError> {
+        let matrix: GrB_Matrix = unsafe { (*self.inner).A };
+        let res: usize = 0;
+        unsafe { LAGraph_RPQMatrix_reduce(&mut (res as u64), matrix, ByCols as u8) };
+        Ok(res)
     }
 }
 
