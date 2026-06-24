@@ -292,6 +292,7 @@ fn regenerate_bindings(graphblas_install: &Path) {
         .allowlist_item("GrB_Info")
         .allowlist_function("GrB_Matrix_new")
         .allowlist_function("GrB_Matrix_nvals")
+        .allowlist_function("GrB_Matrix_nrows")
         .allowlist_function("GrB_Matrix_dup")
         .allowlist_function("GrB_Matrix_free")
         .allowlist_function("GrB_Matrix_extractElement_BOOL")

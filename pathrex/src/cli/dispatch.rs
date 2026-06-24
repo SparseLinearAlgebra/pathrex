@@ -1,5 +1,4 @@
 //! Typed dispatch from CLI algorithm choices to concrete evaluators.
-
 use crate::cli::args::{Algo, BenchArgs, QueryArgs};
 use crate::cli::bench::error::BenchError;
 use crate::cli::bench::runner::run_bench_for_evaluator;
@@ -8,6 +7,7 @@ use crate::cli::loader::LoadedQuery;
 use crate::cli::output::QueryResult;
 use crate::cli::query::run_query_for_evaluator;
 use crate::graph::InMemoryGraph;
+
 use crate::rpq::nfarpq::NfaRpqEvaluator;
 use crate::rpq::rpqmatrix::RpqMatrixEvaluator;
 
