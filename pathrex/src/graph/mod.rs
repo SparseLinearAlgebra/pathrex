@@ -10,6 +10,7 @@ pub(crate) use wrappers::{ThreadScope, compute_outer_inner, ensure_grb_init};
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+use crate::graph::inmemory::GraphMetadata;
 use crate::lagraph_sys::GrB_Info;
 
 use thiserror::Error;
@@ -83,6 +84,9 @@ pub trait GraphDecomposition {
     /// Translates a matrix index back to a string ID.
     fn get_node_name(&self, mapped_id: usize) -> Option<String>;
     fn num_nodes(&self) -> usize;
+    fn get_metadata(&self) -> Option<&GraphMetadata> {
+        None
+    }
 }
 
 /// Associates a backend marker type with a concrete [`GraphBuilder`] and

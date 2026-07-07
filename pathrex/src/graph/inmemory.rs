@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use std::{collections::HashMap, io::Read};
 
-use libc::uinput_setup;
 use rayon::prelude::*;
 
 use crate::formats::mm::{apply_base_iri, parse_index_map};
@@ -191,15 +190,21 @@ pub struct InMemoryGraph {
     graphs: HashMap<String, Arc<LagraphGraph>>,
     metadata: GraphMetadata,
 }
-
 pub struct GraphMetadata {
     label_to_data: HashMap<String, MatrixMetadata>,
 }
+
+impl GraphMetadata {
+    pub fn matrix(&self, label: &str) -> Option<&MatrixMetadata> {
+        self.label_to_data.get(label)
+    }
+}
+
 pub struct MatrixMetadata {
-    dimension: usize,
-    nonzero_rows: usize,
-    nonzero_cols: usize,
-    nvals: usize,
+    pub dimension: usize,
+    pub nonzero_rows: usize,
+    pub nonzero_cols: usize,
+    pub nvals: usize,
 }
 
 impl GraphDecomposition for InMemoryGraph {
@@ -221,12 +226,19 @@ impl GraphDecomposition for InMemoryGraph {
     fn num_nodes(&self) -> usize {
         self.id_to_node.len()
     }
+
+    fn get_metadata(&self) -> Option<&GraphMetadata> {
+        Some(&self.metadata)
+    }
 }
 
 impl InMemoryGraph {
     /// Returns the number of distinct edge labels in the graph.
     pub fn num_labels(&self) -> usize {
         self.graphs.len()
+    }
+    pub fn metadata(&self, label: &str) -> Option<&MatrixMetadata> {
+        self.metadata.label_to_data.get(label)
     }
 }
 
@@ -442,4 +454,7 @@ mod tests {
         assert!(graph.get_graph("http://example.org/knows").is_ok());
         assert!(graph.get_graph("http://example.org/likes").is_ok());
     }
+
+    #[test]
+    fn test_metadata_from_mm() {}
 }

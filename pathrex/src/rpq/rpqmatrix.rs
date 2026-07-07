@@ -1,50 +1,292 @@
 //! Plan-based RPQ evaluation using `LAGraph_RPQMatrix`.
 
 use std::ptr::null_mut;
+use std::{cmp::Ordering, fmt::Display, str::FromStr};
 
-use egg::{Id, RecExpr, define_language};
+use egg::{CostFunction, Id, RecExpr, define_language, rewrite};
 
 use crate::eval::{Evaluator, PreparedEvaluator, ResultCount};
+use crate::graph::wrappers::ReduceType::ByCols;
 use crate::graph::{GraphDecomposition, GraphError, GraphblasMatrix};
 use crate::lagraph_sys::*;
 use crate::rpq::{Endpoint, PathExpr, RpqError, RpqQuery};
 use crate::{grb_ok, la_ok};
 
-const RPQMATRIX_REDUCE_BY_COL: u8 = 1;
+#[derive(Clone, Hash, Ord, Eq, PartialEq, PartialOrd, Debug)]
+struct LabelMeta {
+    pub name: String,
+    pub nvals: usize,
+    pub nonzero_rows: usize,
+    pub nonzero_cols: usize,
+}
+
+impl FromStr for LabelMeta {
+    type Err = <usize as FromStr>::Err;
+    // This is needed for the builtin egg parser. Only used in tests.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(LabelMeta {
+            name: "-".to_string(),
+            nvals: s.parse()?,
+            nonzero_rows: s.parse()?,
+            nonzero_cols: s.parse()?,
+        })
+    }
+}
+
+impl Display for LabelMeta {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "({}, {})", self.name, self.nvals)
+    }
+}
 
 define_language! {
     pub enum RpqPlan {
-        Label(String),
+        Label(LabelMeta),
         NamedVertex(String),
         "/" = Seq([Id; 2]),
         "|" = Alt([Id; 2]),
         "*" = Star([Id; 1]),
+        "l*" = LStar([Id; 2]),
+        "*r" = RStar([Id; 2]),
     }
 }
 
-fn to_expr_aux(path: &PathExpr, expr: &mut RecExpr<RpqPlan>) -> Result<Id, RpqError> {
+pub fn make_rules() -> Vec<egg::Rewrite<RpqPlan, ()>> {
+    vec![
+        rewrite!("assoc-sec-1"; "(/ ?a (/ ?b ?c))" => "(/ (/ ?a ?b) ?c)"),
+        rewrite!("assoc-sec-2"; "(/ (/ ?a ?b) ?c)" => "(/ ?a (/ ?b ?c))"),
+        rewrite!("commute-alt"; "(| ?a ?b)" => "(| ?b ?a)"),
+        rewrite!("assoc-alt"; "(| ?a (| ?b ?c))" => "(| (| ?a ?b) ?c)"),
+        rewrite!("distribute-1"; "(/ ?a (| ?b ?c))" => "(| (/ ?a ?b) (/ ?a ?c))"),
+        rewrite!("distribute-2"; "(/ (| ?a ?b) ?c)" => "(| (/ ?a ?c) (/ ?b ?c))"),
+        rewrite!("distribute-3"; "(| (/ ?a ?b) (/ ?a ?c))" => "(/ ?a (| ?b ?c))"),
+        rewrite!("distribute-4"; "(| (/ ?a ?c) (/ ?b ?c))" => "(/ (| ?a ?b) ?c)"),
+        rewrite!("build-lstar"; "(/ (* ?a) ?b)" => "(l* ?a ?b)"),
+        rewrite!("build-rstar"; "(/ ?a (* ?b))" => "(*r ?a ?b)"),
+    ]
+}
+
+pub struct RandomCostFn;
+impl CostFunction<RpqPlan> for RandomCostFn {
+    type Cost = f64;
+    fn cost<C>(&mut self, _enode: &RpqPlan, _costs: C) -> Self::Cost
+    where
+        C: FnMut(Id) -> Self::Cost,
+    {
+        rand::random()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CardCost {
+    pub score: f64,
+    pub nnz: f64,
+    pub nnz_r: f64,
+    pub nnz_c: f64,
+}
+
+impl Eq for CardCost {}
+
+impl PartialOrd for CardCost {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for CardCost {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match self.score.total_cmp(&other.score) {
+            Ordering::Equal => {}
+            ord => return ord,
+        }
+        match self.nnz.total_cmp(&other.nnz) {
+            Ordering::Equal => {}
+            ord => return ord,
+        }
+        match self.nnz_r.total_cmp(&other.nnz_r) {
+            Ordering::Equal => {}
+            ord => return ord,
+        }
+        self.nnz_c.total_cmp(&other.nnz_c)
+    }
+}
+
+pub struct CardinalityCostFn {
+    pub n: f64,
+    pub star_penalty: f64,
+    pub lr_multiplier: f64,
+}
+
+// TODO: check value intervals
+impl CostFunction<RpqPlan> for CardinalityCostFn {
+    type Cost = CardCost;
+
+    fn cost<C>(&mut self, enode: &RpqPlan, mut costs: C) -> Self::Cost
+    where
+        C: FnMut(Id) -> Self::Cost,
+    {
+        match enode {
+            RpqPlan::NamedVertex(_name) => CardCost {
+                score: 0.0,
+                nnz: 1 as f64,
+                nnz_r: 1 as f64,
+                nnz_c: 1 as f64,
+            },
+            RpqPlan::Label(meta) => CardCost {
+                score: 0.0,
+                nnz: meta.nvals as f64,
+                nnz_r: meta.nonzero_rows as f64,
+                nnz_c: meta.nonzero_cols as f64,
+            },
+
+            RpqPlan::Seq([a, b]) => {
+                let ca = costs(*a);
+                let cb = costs(*b);
+
+                let denom = ca.nnz_r.max(cb.nnz_c).max(1.0);
+                let op_cost = (ca.nnz * cb.nnz) / denom;
+                let score = ca.score + cb.score + op_cost;
+
+                let nnz_est = ca.nnz * cb.nnz / (self.n * self.n);
+
+                CardCost {
+                    score,
+                    nnz: nnz_est,
+                    nnz_r: ca.nnz_r.min(self.n), // TODO: better reduce estimators
+                    nnz_c: cb.nnz_c.min(self.n), // TODO: better reduce estimators
+                }
+            }
+
+            RpqPlan::Alt([a, b]) => {
+                let ca = costs(*a);
+                let cb = costs(*b);
+
+                let overlap = (ca.nnz * cb.nnz) / (self.n * self.n);
+                let op_cost = ca.nnz + cb.nnz - overlap;
+                let score = ca.score + cb.score + op_cost;
+
+                let nnz_est = (ca.nnz + cb.nnz - overlap).min(self.n * self.n).max(0.0);
+
+                let nnz_r_est = (ca.nnz_r + cb.nnz_r - (ca.nnz_r * cb.nnz_r) / self.n)
+                    .min(self.n)
+                    .max(0.0);
+
+                let nnz_c_est = (ca.nnz_c + cb.nnz_c - (ca.nnz_c * cb.nnz_c) / self.n)
+                    .min(self.n)
+                    .max(0.0);
+
+                CardCost {
+                    score,
+                    nnz: nnz_est,
+                    nnz_r: nnz_r_est,
+                    nnz_c: nnz_c_est,
+                }
+            }
+
+            RpqPlan::Star([a]) => {
+                let ca = costs(*a);
+
+                let penalty = self.star_penalty * ca.nnz.max(1.0);
+                let score = ca.score + penalty;
+
+                CardCost {
+                    score,
+                    nnz: self.n * self.n,
+                    nnz_r: self.n,
+                    nnz_c: self.n,
+                }
+            }
+
+            RpqPlan::LStar([a, b]) => {
+                let ca = costs(*a);
+                let cb = costs(*b);
+
+                let denom = ca.nnz_r.max(cb.nnz_c).max(1.0);
+                let base = (ca.nnz * cb.nnz) / denom;
+                let op_cost = self.lr_multiplier * base;
+                let score = ca.score + cb.score + op_cost;
+
+                let nnz_est = self.lr_multiplier * ca.nnz * cb.nnz / (self.n * self.n);
+
+                CardCost {
+                    score,
+                    nnz: nnz_est,
+                    nnz_r: ca.nnz_r.min(self.n), // TODO: better reduce estimators
+                    nnz_c: cb.nnz_c.min(self.n), // TODO: better reduce estimators
+                }
+            }
+
+            RpqPlan::RStar([a, b]) => {
+                let ca = costs(*a);
+                let cb = costs(*b);
+
+                let denom = ca.nnz_r.max(cb.nnz_c).max(1.0);
+                let base = (ca.nnz * cb.nnz) / denom;
+
+                let op_cost = self.lr_multiplier * base;
+                let score = ca.score + cb.score + op_cost;
+
+                let nnz_est = self.lr_multiplier * ca.nnz * cb.nnz / (self.n * self.n);
+
+                CardCost {
+                    score,
+                    nnz: nnz_est,
+                    nnz_r: ca.nnz_r.min(self.n), // TODO: better reduce estimators
+                    nnz_c: cb.nnz_c.min(self.n), // TODO: better reduce estimators
+                }
+            }
+        }
+    }
+}
+
+fn label_meta<G: GraphDecomposition>(label: &str, graph: &G) -> Result<LabelMeta, RpqError> {
+    if let Some(metadata) = graph.get_metadata().and_then(|m| m.matrix(label)) {
+        return Ok(LabelMeta {
+            name: label.to_owned(),
+            nvals: metadata.nvals,
+            nonzero_rows: metadata.nonzero_rows,
+            nonzero_cols: metadata.nonzero_cols,
+        });
+    }
+
+    // TODO: maybe create optimized (for mm format) and nonoptimized (for other formats) plans
+    let lg = graph.get_graph(label)?;
+    let nvals = lg.nvals()? as usize;
+    Ok(LabelMeta {
+        name: label.to_owned(),
+        nvals,
+        nonzero_rows: nvals,
+        nonzero_cols: nvals,
+    })
+}
+
+fn to_expr_aux<G: GraphDecomposition>(
+    path: &PathExpr,
+    expr: &mut RecExpr<RpqPlan>,
+    graph: &G,
+) -> Result<Id, RpqError> {
     match path {
-        PathExpr::Label(label) => Ok(expr.add(RpqPlan::Label(label.clone()))),
+        PathExpr::Label(label) => Ok(expr.add(RpqPlan::Label(label_meta(label, graph)?))),
 
         PathExpr::Sequence(lhs, rhs) => {
-            let l = to_expr_aux(lhs, expr)?;
-            let r = to_expr_aux(rhs, expr)?;
+            let l = to_expr_aux(lhs, expr, graph)?;
+            let r = to_expr_aux(rhs, expr, graph)?;
             Ok(expr.add(RpqPlan::Seq([l, r])))
         }
 
         PathExpr::Alternative(lhs, rhs) => {
-            let l = to_expr_aux(lhs, expr)?;
-            let r = to_expr_aux(rhs, expr)?;
+            let l = to_expr_aux(lhs, expr, graph)?;
+            let r = to_expr_aux(rhs, expr, graph)?;
             Ok(expr.add(RpqPlan::Alt([l, r])))
         }
 
         PathExpr::ZeroOrMore(inner) => {
-            let i = to_expr_aux(inner, expr)?;
+            let i = to_expr_aux(inner, expr, graph)?;
             Ok(expr.add(RpqPlan::Star([i])))
         }
 
         PathExpr::OneOrMore(inner) => {
-            let e = to_expr_aux(inner, expr)?;
+            let e = to_expr_aux(inner, expr, graph)?;
             let s = expr.add(RpqPlan::Star([e]));
             Ok(expr.add(RpqPlan::Seq([e, s])))
         }
@@ -57,9 +299,12 @@ fn to_expr_aux(path: &PathExpr, expr: &mut RecExpr<RpqPlan>) -> Result<Id, RpqEr
 
 /// Compile a [`RpqQuery`]  into
 /// [`RecExpr<RpqPlan>`].
-pub fn query_to_expr(query: &RpqQuery) -> Result<RecExpr<RpqPlan>, RpqError> {
+pub fn query_to_expr<G: GraphDecomposition>(
+    query: &RpqQuery,
+    graph: &G,
+) -> Result<RecExpr<RpqPlan>, RpqError> {
     let mut expr = RecExpr::default();
-    let path_root = to_expr_aux(&query.path, &mut expr)?;
+    let path_root = to_expr_aux(&query.path, &mut expr, graph)?;
 
     let _root = match (&query.subject, &query.object) {
         (Endpoint::Variable(_), Endpoint::Variable(_)) => path_root,
@@ -105,7 +350,7 @@ pub fn materialize<G: GraphDecomposition>(
     for (id, node) in expr.as_ref().iter().enumerate() {
         plans[id] = match node {
             RpqPlan::Label(label) => {
-                let lg = graph.get_graph(label)?;
+                let lg = graph.get_graph(&label.name)?;
                 let mat = unsafe { (*lg.inner).A };
                 RPQMatrixPlan {
                     op: RPQMatrixOp::RPQ_MATRIX_OP_LABEL,
@@ -164,6 +409,22 @@ pub fn materialize<G: GraphDecomposition>(
                 mat: null_mut(),
                 res_mat: null_mut(),
             },
+
+            RpqPlan::LStar([l, r]) => RPQMatrixPlan {
+                op: RPQMatrixOp::RPQ_MATRIX_OP_KLEENE_L,
+                lhs: unsafe { plans.as_mut_ptr().add(usize::from(*l)) },
+                rhs: unsafe { plans.as_mut_ptr().add(usize::from(*r)) },
+                mat: null_mut(),
+                res_mat: null_mut(),
+            },
+
+            RpqPlan::RStar([l, r]) => RPQMatrixPlan {
+                op: RPQMatrixOp::RPQ_MATRIX_OP_KLEENE_R,
+                lhs: unsafe { plans.as_mut_ptr().add(usize::from(*l)) },
+                rhs: unsafe { plans.as_mut_ptr().add(usize::from(*r)) },
+                mat: null_mut(),
+                res_mat: null_mut(),
+            },
         };
     }
 
@@ -186,7 +447,7 @@ impl RpqMatrixResult {
             grb_ok!(LAGraph_RPQMatrix_reduce(
                 &mut count,
                 self.matrix.inner,
-                RPQMATRIX_REDUCE_BY_COL,
+                ByCols as u8,
             ))?
         };
         Ok(count as u64)
@@ -254,7 +515,7 @@ impl Evaluator for RpqMatrixEvaluator {
         query: &RpqQuery,
         graph: &G,
     ) -> Result<PreparedRpqMatrix, RpqError> {
-        let expr = query_to_expr(query)?;
+        let expr = query_to_expr(query, graph)?;
         let (plans, owned_matrices) = materialize(&expr, graph)?;
 
         Ok(PreparedRpqMatrix {
