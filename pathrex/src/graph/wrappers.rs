@@ -73,7 +73,7 @@ impl Drop for ThreadScope {
     }
 }
 
-enum ReduceType {
+pub enum ReduceType {
     ByRows,
     ByCols,
 }
