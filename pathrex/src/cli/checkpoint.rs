@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use super::args::Algo;
+use super::args::{Algo, RpqMatrixOptimizer};
 
 /// Persistent checkpoint state written to disk as JSON.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,6 +25,8 @@ pub struct Checkpoint {
     pub graph_path: String,
     pub queries_file: String,
     pub algorithms: Vec<Algo>,
+    #[serde(default)]
+    pub rpqmatrix_optimizer: RpqMatrixOptimizer,
     pub completed: Vec<QueryCompletion>,
 }
 
@@ -37,12 +39,18 @@ pub struct QueryCompletion {
 
 impl Checkpoint {
     /// Create a fresh checkpoint for a new benchmark run.
-    pub fn new(graph_path: &str, queries_file: &str, algorithms: &[Algo]) -> Self {
+    pub fn new(
+        graph_path: &str,
+        queries_file: &str,
+        algorithms: &[Algo],
+        rpqmatrix_optimizer: RpqMatrixOptimizer,
+    ) -> Self {
         Self {
             version: 1,
             graph_path: graph_path.to_string(),
             queries_file: queries_file.to_string(),
             algorithms: algorithms.to_vec(),
+            rpqmatrix_optimizer,
             completed: Vec::new(),
         }
     }
@@ -65,6 +73,7 @@ impl Checkpoint {
         graph_path: &str,
         queries_file: &str,
         algorithms: &[Algo],
+        rpqmatrix_optimizer: RpqMatrixOptimizer,
     ) -> Result<(), CheckpointError> {
         if self.graph_path != graph_path {
             return Err(CheckpointError::Mismatch(format!(
@@ -84,6 +93,12 @@ impl Checkpoint {
             return Err(CheckpointError::Mismatch(format!(
                 "algorithms: checkpoint has {:?}, current is {:?}",
                 self.algorithms, algorithms
+            )));
+        }
+        if self.rpqmatrix_optimizer != rpqmatrix_optimizer {
+            return Err(CheckpointError::Mismatch(format!(
+                "rpqmatrix_optimizer: checkpoint has '{}', current is '{}'",
+                self.rpqmatrix_optimizer, rpqmatrix_optimizer
             )));
         }
         Ok(())
@@ -145,9 +160,15 @@ pub struct Checkpointer {
 
 impl Checkpointer {
     /// Create a new checkpointer with no completions.
-    pub fn fresh(graph_path: &str, queries_file: &str, algorithms: &[Algo], path: PathBuf) -> Self {
+    pub fn fresh(
+        graph_path: &str,
+        queries_file: &str,
+        algorithms: &[Algo],
+        rpqmatrix_optimizer: RpqMatrixOptimizer,
+        path: PathBuf,
+    ) -> Self {
         Self {
-            inner: Checkpoint::new(graph_path, queries_file, algorithms),
+            inner: Checkpoint::new(graph_path, queries_file, algorithms, rpqmatrix_optimizer),
             path,
         }
     }

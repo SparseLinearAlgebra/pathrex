@@ -16,7 +16,8 @@
 //! cargo run --release --bin pathrex --features bench -- bench \
 //!   --graph tests/testdata/mm_graph \
 //!   --queries tests/testdata/cases/any-any/queries.txt \
-//!   --algo nfa rpqmatrix \
+//!   --algo nfarpq rpqmatrix \
+//!   --rpqmatrix-optimizer cardinality \
 //!   --output results.json
 //! ```
 
@@ -27,7 +28,9 @@ use chrono::Utc;
 use clap::Parser;
 use thiserror::Error;
 
-use pathrex::cli::args::{BenchArgs, Cli, Commands, QueryArgs};
+use pathrex::cli::args::{
+    Algo, BenchArgs, Cli, Commands, CommonArgs, GraphFormat, QueryArgs, RpqMatrixOptimizer,
+};
 use pathrex::cli::bench::BenchError;
 use pathrex::cli::checkpoint::{Checkpoint, CheckpointError, Checkpointer};
 use pathrex::cli::dispatch::{dispatch_bench, dispatch_query};
@@ -55,6 +58,8 @@ enum MainError {
         #[source]
         source: std::io::Error,
     },
+    #[error("invalid arguments: {0}")]
+    InvalidArgs(String),
 }
 
 fn main() {
@@ -78,6 +83,26 @@ fn run() -> Result<(), MainError> {
     }
 }
 
+fn validate_common_args(common: &CommonArgs) -> Result<(), MainError> {
+    if common.rpqmatrix_optimizer == RpqMatrixOptimizer::None {
+        return Ok(());
+    }
+
+    if !common.algo.contains(&Algo::Rpqmatrix) {
+        return Err(MainError::InvalidArgs(
+            "--rpqmatrix-optimizer can only be used when --algo includes rpqmatrix".to_string(),
+        ));
+    }
+
+    if common.format != GraphFormat::Mm {
+        return Err(MainError::InvalidArgs(
+            "--rpqmatrix-optimizer can only be used with --format mm".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
 fn load_query_file(path: &str, base_iri: Option<&str>) -> Result<Vec<LoadedQuery>, MainError> {
     load_queries(Path::new(path), base_iri).map_err(|e| MainError::Queries {
         path: path.to_string(),
@@ -87,12 +112,14 @@ fn load_query_file(path: &str, base_iri: Option<&str>) -> Result<Vec<LoadedQuery
 
 fn run_query_cmd(args: QueryArgs) -> Result<(), MainError> {
     let common = &args.common;
+    validate_common_args(common)?;
 
     eprintln!("=== pathrex query ===");
     eprintln!("Graph:   {}", common.graph);
     eprintln!("Format:  {}", common.format);
     eprintln!("Queries: {}", common.queries);
     eprintln!("Algos:   {:?}", common.algo);
+    eprintln!("RPQMatrix optimizer: {}", common.rpqmatrix_optimizer);
     eprintln!();
 
     eprintln!("[1/2] Loading graph...");
@@ -127,6 +154,7 @@ fn run_query_cmd(args: QueryArgs) -> Result<(), MainError> {
                 graph_path: common.graph.clone(),
                 graph_format: common.format.to_string(),
                 queries_file: common.queries.clone(),
+                rpqmatrix_optimizer: Some(common.rpqmatrix_optimizer.to_string()),
                 base_iri: common.base_iri.clone(),
                 num_nodes: graph.num_nodes(),
                 num_labels: graph.num_labels(),
@@ -152,7 +180,12 @@ fn build_checkpointer(args: &BenchArgs, queries_len: usize) -> Result<Checkpoint
     if args.resume {
         match Checkpoint::load(&path)? {
             Some(cp) => {
-                cp.validate(&common.graph, &common.queries, &common.algo)?;
+                cp.validate(
+                    &common.graph,
+                    &common.queries,
+                    &common.algo,
+                    common.rpqmatrix_optimizer,
+                )?;
                 let cper = Checkpointer::with_inner(cp, path);
                 eprintln!(
                     "  resuming: {}/{} queries fully done",
@@ -167,6 +200,7 @@ fn build_checkpointer(args: &BenchArgs, queries_len: usize) -> Result<Checkpoint
                     &common.graph,
                     &common.queries,
                     &common.algo,
+                    common.rpqmatrix_optimizer,
                     path,
                 ))
             }
@@ -176,6 +210,7 @@ fn build_checkpointer(args: &BenchArgs, queries_len: usize) -> Result<Checkpoint
             &common.graph,
             &common.queries,
             &common.algo,
+            common.rpqmatrix_optimizer,
             path,
         ))
     }
@@ -183,12 +218,14 @@ fn build_checkpointer(args: &BenchArgs, queries_len: usize) -> Result<Checkpoint
 
 fn run_bench_cmd(args: BenchArgs) -> Result<(), MainError> {
     let common = &args.common;
+    validate_common_args(common)?;
 
     eprintln!("=== pathrex bench ===");
     eprintln!("Graph:      {}", common.graph);
     eprintln!("Format:     {}", common.format);
     eprintln!("Queries:    {}", common.queries);
     eprintln!("Algos:      {:?}", common.algo);
+    eprintln!("RPQMatrix optimizer: {}", common.rpqmatrix_optimizer);
     eprintln!("Output:     {}", args.output);
     eprintln!();
 
@@ -223,6 +260,7 @@ fn run_bench_cmd(args: BenchArgs) -> Result<(), MainError> {
             graph_format: common.format.to_string(),
             queries_file: common.queries.clone(),
             base_iri: common.base_iri.clone(),
+            rpqmatrix_optimizer: Some(common.rpqmatrix_optimizer.to_string()),
             num_nodes: graph.num_nodes(),
             num_labels: graph.num_labels(),
             sample_size: args.sample_size,

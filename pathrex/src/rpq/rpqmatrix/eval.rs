@@ -1,13 +1,10 @@
-
+use super::expr::{materialize, query_to_expr};
+use super::optimize::{OptimizationStrategy, optimize_expr_cardinality};
+use super::result::{PreparedRpqMatrix, RpqMatrixResult};
 /// RPQ evaluator backed by `LAGraph_RPQMatrix`.
 use crate::eval::Evaluator;
 use crate::graph::GraphDecomposition;
-use super::optimize::{OptimizationStrategy,optimize_expr_cardinality};
 use crate::rpq::{RpqError, RpqQuery};
-use super::result::{RpqMatrixResult,PreparedRpqMatrix};
-use super::expr::{query_to_expr,materialize};
-
-
 
 #[derive(Clone, Copy)]
 pub struct RpqMatrixEvaluator {
@@ -16,7 +13,9 @@ pub struct RpqMatrixEvaluator {
 
 impl RpqMatrixEvaluator {
     pub fn unoptimized() -> Self {
-        return RpqMatrixEvaluator { optimizer: OptimizationStrategy::NoOpt };
+        return RpqMatrixEvaluator {
+            optimizer: OptimizationStrategy::NoOpt,
+        };
     }
     pub fn optimized(opt: OptimizationStrategy) -> Self {
         return RpqMatrixEvaluator { optimizer: opt };
@@ -57,7 +56,6 @@ impl Evaluator for RpqMatrixEvaluator {
         })
     }
 }
-
 
 #[cfg(test)]
 mod tests {

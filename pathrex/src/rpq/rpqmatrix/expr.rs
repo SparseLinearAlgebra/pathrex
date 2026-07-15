@@ -1,16 +1,12 @@
-
-
 use std::ptr::null_mut;
 
 use egg::{Id, RecExpr};
 
+use super::plan::{LabelMeta, RpqPlan};
 use crate::graph::GraphDecomposition;
+use crate::grb_ok;
 use crate::lagraph_sys::*;
 use crate::rpq::{Endpoint, PathExpr, RpqError, RpqQuery};
-use super::plan::{RpqPlan,LabelMeta};
-use crate::grb_ok;
-
-
 
 fn label_meta<G: GraphDecomposition>(label: &str, graph: &G) -> Result<LabelMeta, RpqError> {
     if let Some(metadata) = graph.get_metadata().and_then(|m| m.matrix(label)) {

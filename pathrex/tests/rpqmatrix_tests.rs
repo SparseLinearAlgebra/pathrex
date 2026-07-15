@@ -6,8 +6,8 @@ use std::sync::LazyLock;
 use pathrex::formats::mm::MatrixMarket;
 use pathrex::graph::{Graph, GraphDecomposition, GraphError, InMemory, InMemoryGraph};
 use pathrex::lagraph_sys::{GrB_Index, GrB_Info, GrB_Matrix_extractElement_BOOL};
-use pathrex::rpq::rpqmatrix::eval::{RpqMatrixEvaluator};
-use pathrex::rpq::rpqmatrix::result::{RpqMatrixResult};
+use pathrex::rpq::rpqmatrix::eval::RpqMatrixEvaluator;
+use pathrex::rpq::rpqmatrix::result::RpqMatrixResult;
 use pathrex::rpq::{Endpoint, PathExpr, PreparedRpq, RpqError, RpqEvaluator, RpqQuery};
 use pathrex::sparql::parse_rpq;
 use pathrex::utils::build_graph;
@@ -183,8 +183,12 @@ fn prepared_rpqmatrix_execution_matches_evaluate() {
         var("y"),
     );
 
-    let direct = RpqMatrixEvaluator::default().evaluate(&query, &graph).expect("direct");
-    let mut prepared = RpqMatrixEvaluator::default().prepare(&query, &graph).expect("prepare");
+    let direct = RpqMatrixEvaluator::default()
+        .evaluate(&query, &graph)
+        .expect("direct");
+    let mut prepared = RpqMatrixEvaluator::default()
+        .prepare(&query, &graph)
+        .expect("prepare");
     let prepared_result = prepared.execute().expect("execute");
 
     assert_eq!(prepared_result.nnz, direct.nnz);
@@ -199,7 +203,9 @@ fn prepared_rpqmatrix_execution_can_run_twice() {
         var("y"),
     );
 
-    let mut prepared = RpqMatrixEvaluator::default().prepare(&query, &graph).expect("prepare");
+    let mut prepared = RpqMatrixEvaluator::default()
+        .prepare(&query, &graph)
+        .expect("prepare");
     let first = prepared.execute().expect("first");
     let second = prepared.execute().expect("second");
 

@@ -11,6 +11,8 @@
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
+use crate::rpq::rpqmatrix::OptimizationStrategy;
+
 /// Top-level CLI for pathrex.
 #[derive(Parser, Debug)]
 #[command(
@@ -62,6 +64,15 @@ pub struct CommonArgs {
     /// Algorithms to use.
     #[arg(short = 'a', long, value_enum, num_args = 1.., required = true)]
     pub algo: Vec<Algo>,
+
+    /// Optimizer type (only for the RPQMatrix algorithm and MatrixMarket source graph).
+    #[arg(
+        short = 'p',
+        long = "rpqmatrix-optimizer",
+        value_enum,
+        default_value_t = RpqMatrixOptimizer::None
+    )]
+    pub rpqmatrix_optimizer: RpqMatrixOptimizer,
 }
 
 /// Arguments for the `query` subcommand.
@@ -152,6 +163,42 @@ impl std::fmt::Display for GraphFormat {
             GraphFormat::Mm => write!(f, "mm"),
             GraphFormat::Csv => write!(f, "csv"),
             GraphFormat::Rdf => write!(f, "rdf"),
+        }
+    }
+}
+
+/// Optimizer types.
+/// Only for RPQMatrix algorithm and MatrixMarket source graph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, serde::Serialize, serde::Deserialize)]
+#[value(rename_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
+pub enum RpqMatrixOptimizer {
+    /// Optimizer based on cardinality of source matrices.
+    Cardinality,
+    /// Without any optimizations.
+    None,
+}
+
+impl Default for RpqMatrixOptimizer {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+impl std::fmt::Display for RpqMatrixOptimizer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RpqMatrixOptimizer::Cardinality => write!(f, "cardinality"),
+            RpqMatrixOptimizer::None => write!(f, "none"),
+        }
+    }
+}
+
+impl From<RpqMatrixOptimizer> for OptimizationStrategy {
+    fn from(value: RpqMatrixOptimizer) -> Self {
+        match value {
+            RpqMatrixOptimizer::None => OptimizationStrategy::NoOpt,
+            RpqMatrixOptimizer::Cardinality => OptimizationStrategy::Cardinality,
         }
     }
 }
