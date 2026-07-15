@@ -6,7 +6,8 @@ use std::sync::LazyLock;
 use pathrex::formats::mm::MatrixMarket;
 use pathrex::graph::{Graph, GraphDecomposition, GraphError, InMemory, InMemoryGraph};
 use pathrex::lagraph_sys::{GrB_Index, GrB_Info, GrB_Matrix_extractElement_BOOL};
-use pathrex::rpq::rpqmatrix::{RpqMatrixEvaluator, RpqMatrixResult};
+use pathrex::rpq::rpqmatrix::eval::{RpqMatrixEvaluator};
+use pathrex::rpq::rpqmatrix::result::{RpqMatrixResult};
 use pathrex::rpq::{Endpoint, PathExpr, PreparedRpq, RpqError, RpqEvaluator, RpqQuery};
 use pathrex::sparql::parse_rpq;
 use pathrex::utils::build_graph;
@@ -79,7 +80,7 @@ fn run_la_n_egg_case(case_name: &str) {
     );
 
     let graph = &*LA_N_EGG_GRAPH;
-    let evaluator = RpqMatrixEvaluator;
+    let evaluator = RpqMatrixEvaluator::default();
 
     for (i, (query, expected_nnz)) in queries.iter().zip(expected.iter()).enumerate() {
         let result = evaluator.evaluate(query, graph).unwrap_or_else(|e| {
@@ -128,7 +129,7 @@ fn matrix_entry_set(result: &RpqMatrixResult, row: GrB_Index, col: GrB_Index) ->
 #[test]
 fn test_single_label_variable_variable() {
     let graph = build_graph(&[("A", "B", "knows"), ("B", "C", "knows")]);
-    let evaluator = RpqMatrixEvaluator;
+    let evaluator = RpqMatrixEvaluator::default();
 
     let result = evaluator
         .evaluate(&rq(var("x"), label("knows"), var("y")), &graph)
@@ -142,7 +143,7 @@ fn test_single_label_variable_variable() {
 #[test]
 fn test_single_label_named_source() {
     let graph = build_graph(&[("A", "B", "knows"), ("B", "C", "knows")]);
-    let evaluator = RpqMatrixEvaluator;
+    let evaluator = RpqMatrixEvaluator::default();
 
     let result = evaluator
         .evaluate(&rq(named_ep("A"), label("knows"), var("y")), &graph)
@@ -162,7 +163,7 @@ fn test_single_label_named_source() {
 #[test]
 fn test_sequence_path() {
     let graph = build_graph(&[("A", "B", "knows"), ("B", "C", "likes")]);
-    let evaluator = RpqMatrixEvaluator;
+    let evaluator = RpqMatrixEvaluator::default();
 
     let path = PathExpr::Sequence(Box::new(label("knows")), Box::new(label("likes")));
 
@@ -182,8 +183,8 @@ fn prepared_rpqmatrix_execution_matches_evaluate() {
         var("y"),
     );
 
-    let direct = RpqMatrixEvaluator.evaluate(&query, &graph).expect("direct");
-    let mut prepared = RpqMatrixEvaluator.prepare(&query, &graph).expect("prepare");
+    let direct = RpqMatrixEvaluator::default().evaluate(&query, &graph).expect("direct");
+    let mut prepared = RpqMatrixEvaluator::default().prepare(&query, &graph).expect("prepare");
     let prepared_result = prepared.execute().expect("execute");
 
     assert_eq!(prepared_result.nnz, direct.nnz);
@@ -198,7 +199,7 @@ fn prepared_rpqmatrix_execution_can_run_twice() {
         var("y"),
     );
 
-    let mut prepared = RpqMatrixEvaluator.prepare(&query, &graph).expect("prepare");
+    let mut prepared = RpqMatrixEvaluator::default().prepare(&query, &graph).expect("prepare");
     let first = prepared.execute().expect("first");
     let second = prepared.execute().expect("second");
 
@@ -210,7 +211,7 @@ fn prepared_rpqmatrix_execution_can_run_twice() {
 #[test]
 fn test_sequence_path_named_source() {
     let graph = build_graph(&[("A", "B", "knows"), ("B", "C", "likes")]);
-    let evaluator = RpqMatrixEvaluator;
+    let evaluator = RpqMatrixEvaluator::default();
 
     let path = PathExpr::Sequence(Box::new(label("knows")), Box::new(label("likes")));
 
@@ -232,7 +233,7 @@ fn test_sequence_path_named_source() {
 #[test]
 fn test_alternative_path() {
     let graph = build_graph(&[("A", "B", "knows"), ("A", "C", "likes")]);
-    let evaluator = RpqMatrixEvaluator;
+    let evaluator = RpqMatrixEvaluator::default();
 
     let path = PathExpr::Alternative(Box::new(label("knows")), Box::new(label("likes")));
 
@@ -259,7 +260,7 @@ fn test_alternative_path() {
 #[test]
 fn test_zero_or_more_path() {
     let graph = build_graph(&[("A", "B", "knows"), ("B", "C", "knows")]);
-    let evaluator = RpqMatrixEvaluator;
+    let evaluator = RpqMatrixEvaluator::default();
 
     let path = PathExpr::ZeroOrMore(Box::new(label("knows")));
 
@@ -291,7 +292,7 @@ fn test_zero_or_more_path() {
 #[test]
 fn test_one_or_more_path() {
     let graph = build_graph(&[("A", "B", "knows"), ("B", "C", "knows")]);
-    let evaluator = RpqMatrixEvaluator;
+    let evaluator = RpqMatrixEvaluator::default();
 
     let path = PathExpr::OneOrMore(Box::new(label("knows")));
 
@@ -321,7 +322,7 @@ fn test_one_or_more_path() {
 #[test]
 fn test_zero_or_one_unsupported() {
     let graph = build_graph(&[("A", "B", "knows")]);
-    let evaluator = RpqMatrixEvaluator;
+    let evaluator = RpqMatrixEvaluator::default();
 
     let path = PathExpr::ZeroOrOne(Box::new(label("knows")));
     let result = evaluator.evaluate(&rq(var("x"), path, var("y")), &graph);
@@ -335,7 +336,7 @@ fn test_zero_or_one_unsupported() {
 #[test]
 fn test_label_not_found() {
     let graph = build_graph(&[("A", "B", "knows")]);
-    let evaluator = RpqMatrixEvaluator;
+    let evaluator = RpqMatrixEvaluator::default();
 
     let result = evaluator.evaluate(&rq(var("x"), label("nonexistent"), var("y")), &graph);
 
@@ -348,7 +349,7 @@ fn test_label_not_found() {
 #[test]
 fn test_vertex_not_found() {
     let graph = build_graph(&[("A", "B", "knows")]);
-    let evaluator = RpqMatrixEvaluator;
+    let evaluator = RpqMatrixEvaluator::default();
 
     let result = evaluator.evaluate(&rq(named_ep("Z"), label("knows"), var("y")), &graph);
 
@@ -363,7 +364,7 @@ fn test_vertex_not_found() {
 #[test]
 fn test_bound_object() {
     let graph = build_graph(&[("A", "B", "knows"), ("C", "D", "knows")]);
-    let evaluator = RpqMatrixEvaluator;
+    let evaluator = RpqMatrixEvaluator::default();
 
     let result = evaluator
         .evaluate(&rq(var("x"), label("knows"), named_ep("B")), &graph)
@@ -377,7 +378,7 @@ fn test_bound_object() {
 #[test]
 fn test_bound_subject_and_object() {
     let graph = build_graph(&[("A", "B", "knows"), ("C", "D", "knows")]);
-    let evaluator = RpqMatrixEvaluator;
+    let evaluator = RpqMatrixEvaluator::default();
 
     let result = evaluator
         .evaluate(&rq(named_ep("A"), label("knows"), named_ep("B")), &graph)
@@ -402,7 +403,7 @@ fn test_cycle_graph_star() {
         ("B", "C", "knows"),
         ("C", "A", "knows"),
     ]);
-    let evaluator = RpqMatrixEvaluator;
+    let evaluator = RpqMatrixEvaluator::default();
 
     let path = PathExpr::ZeroOrMore(Box::new(label("knows")));
 
@@ -441,7 +442,7 @@ fn test_complex_path() {
         ("B", "C", "likes"),
         ("C", "D", "knows"),
     ]);
-    let evaluator = RpqMatrixEvaluator;
+    let evaluator = RpqMatrixEvaluator::default();
 
     // knows / likes* / knows
     let path = PathExpr::Sequence(
@@ -468,7 +469,7 @@ fn test_complex_path() {
 #[test]
 fn test_no_matching_path() {
     let graph = build_graph(&[("A", "B", "knows")]);
-    let evaluator = RpqMatrixEvaluator;
+    let evaluator = RpqMatrixEvaluator::default();
 
     let path = PathExpr::Sequence(Box::new(label("knows")), Box::new(label("likes")));
 

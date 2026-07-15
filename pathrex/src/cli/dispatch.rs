@@ -9,7 +9,7 @@ use crate::cli::query::run_query_for_evaluator;
 use crate::graph::InMemoryGraph;
 
 use crate::rpq::nfarpq::NfaRpqEvaluator;
-use crate::rpq::rpqmatrix::RpqMatrixEvaluator;
+use crate::rpq::rpqmatrix::eval::RpqMatrixEvaluator;
 
 fn merge_results(all: &mut Vec<QueryResult>, per_algo: Vec<QueryResult>) {
     for result in per_algo {
@@ -35,7 +35,7 @@ pub fn dispatch_query(
         let name = algo.to_string();
         let per_algo = match algo {
             Algo::NfaRpq => run_query_for_evaluator(&name, NfaRpqEvaluator, graph, queries),
-            Algo::Rpqmatrix => run_query_for_evaluator(&name, RpqMatrixEvaluator, graph, queries),
+            Algo::Rpqmatrix => run_query_for_evaluator(&name, RpqMatrixEvaluator::default(), graph, queries),
         };
         merge_results(&mut all, per_algo);
     }
@@ -67,7 +67,7 @@ pub fn dispatch_bench(
                 args,
                 algo,
                 &name,
-                RpqMatrixEvaluator,
+                RpqMatrixEvaluator::default(),
                 graph,
                 queries,
                 checkpointer,
