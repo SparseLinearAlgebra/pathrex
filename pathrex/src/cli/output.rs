@@ -91,6 +91,7 @@ pub struct QueryMetadata {
     pub graph_path: String,
     pub graph_format: String,
     pub queries_file: String,
+    pub rpqmatrix_optimizer: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_iri: Option<String>,
     pub num_nodes: usize,
@@ -116,6 +117,7 @@ pub struct BenchMetadata {
     pub graph_path: String,
     pub graph_format: String,
     pub queries_file: String,
+    pub rpqmatrix_optimizer: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_iri: Option<String>,
     pub num_nodes: usize,

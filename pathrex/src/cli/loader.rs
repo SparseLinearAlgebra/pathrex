@@ -67,7 +67,7 @@ pub fn load_graph(
             })
         }
         GraphFormat::Rdf => {
-            let rdf = Rdf::from_path(graph_path).unwrap();
+            let rdf = Rdf::from_path(graph_path).unwrap(); // TODO: handle panic
             Graph::<InMemory>::try_from(rdf).map_err(|e| GraphLoadError::Build {
                 path: graph_path.to_string(),
                 source: e,
