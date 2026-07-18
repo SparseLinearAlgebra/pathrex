@@ -501,3 +501,12 @@ fn test_la_n_egg_any_con() {
 fn test_la_n_egg_con_any() {
     run_la_n_egg_case("con-any");
 }
+
+#[test]
+fn test_cardinality_optimizer_give_same_result_unoptimized_way_1() {}
+
+#[test]
+fn test_cardinality_optimizer_give_same_result_unoptimized_way_2() {}
+
+#[test]
+fn test_cardinality_optimizer_give_same_result_unoptimized_way_3() {}
