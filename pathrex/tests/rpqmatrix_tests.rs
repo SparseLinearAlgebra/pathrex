@@ -3,9 +3,11 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::sync::LazyLock;
 
+use pathrex::eval::ResultCount;
 use pathrex::formats::mm::MatrixMarket;
 use pathrex::graph::{Graph, GraphDecomposition, GraphError, InMemory, InMemoryGraph};
 use pathrex::lagraph_sys::{GrB_Index, GrB_Info, GrB_Matrix_extractElement_BOOL};
+use pathrex::rpq::rpqmatrix::OptimizationStrategy::Cardinality;
 use pathrex::rpq::rpqmatrix::eval::RpqMatrixEvaluator;
 use pathrex::rpq::rpqmatrix::result::RpqMatrixResult;
 use pathrex::rpq::{Endpoint, PathExpr, PreparedRpq, RpqError, RpqEvaluator, RpqQuery};
@@ -68,7 +70,7 @@ fn load_expected_nnz(case_dir: &Path) -> Vec<u64> {
         .collect()
 }
 
-fn run_la_n_egg_case(case_name: &str) {
+fn run_la_n_egg_case_with_evaluator(case_name: &str, evaluator: RpqMatrixEvaluator) {
     let case_dir = Path::new(CASES_DIR).join(case_name);
     let queries = load_queries(&case_dir);
     let expected = load_expected_nnz(&case_dir);
@@ -80,7 +82,6 @@ fn run_la_n_egg_case(case_name: &str) {
     );
 
     let graph = &*LA_N_EGG_GRAPH;
-    let evaluator = RpqMatrixEvaluator::default();
 
     for (i, (query, expected_nnz)) in queries.iter().zip(expected.iter()).enumerate() {
         let result = evaluator.evaluate(query, graph).unwrap_or_else(|e| {
@@ -94,6 +95,14 @@ fn run_la_n_egg_case(case_name: &str) {
             nnz = result.nnz,
         );
     }
+}
+
+fn run_la_n_egg_case(case_name: &str) {
+    run_la_n_egg_case_with_evaluator(case_name, RpqMatrixEvaluator::default());
+}
+
+fn run_la_n_egg_case_cardinality(case_name: &str) {
+    run_la_n_egg_case_with_evaluator(case_name, RpqMatrixEvaluator::optimized(Cardinality));
 }
 
 fn label(s: &str) -> PathExpr {
@@ -122,6 +131,31 @@ fn matrix_entry_set(result: &RpqMatrixResult, row: GrB_Index, col: GrB_Index) ->
         let info = GrB_Matrix_extractElement_BOOL(&mut x, result.matrix.inner, row, col);
         info == GrB_Info::GrB_SUCCESS && x
     }
+}
+
+// TODO: made it reusable for different optimizers
+fn evaluate_default_and_cardinality(
+    graph: &InMemoryGraph,
+    query: &RpqQuery,
+) -> (RpqMatrixResult, RpqMatrixResult) {
+    let default_result = RpqMatrixEvaluator::default()
+        .evaluate(query, graph)
+        .expect("default evaluator should succeed");
+    let optimized_result = RpqMatrixEvaluator::optimized(Cardinality)
+        .evaluate(query, graph)
+        .expect("cardinality optimizer should succeed");
+
+    assert_eq!(
+        default_result.nnz, optimized_result.nnz,
+        "optimized evaluator should preserve result nnz"
+    );
+    assert_eq!(
+        default_result.result_count().expect("default count"),
+        optimized_result.result_count().expect("optimized count"),
+        "optimized evaluator should preserve result count"
+    );
+
+    (default_result, optimized_result)
 }
 
 /// Graph: A --knows--> B --knows--> C
@@ -503,10 +537,116 @@ fn test_la_n_egg_con_any() {
 }
 
 #[test]
-fn test_cardinality_optimizer_give_same_result_unoptimized_way_1() {}
+fn test_la_n_egg_any_any_cardinality_optimizer() {
+    run_la_n_egg_case_cardinality("any-any");
+}
 
 #[test]
-fn test_cardinality_optimizer_give_same_result_unoptimized_way_2() {}
+fn test_la_n_egg_any_con_cardinality_optimizer() {
+    run_la_n_egg_case_cardinality("con-any");
+}
 
 #[test]
-fn test_cardinality_optimizer_give_same_result_unoptimized_way_3() {}
+fn test_cardinality_optimizer_give_same_result_unoptimized_way_1() {
+    let graph = build_graph(&[
+        ("A", "B", "knows"),
+        ("B", "C", "knows"),
+        ("C", "D", "likes"),
+        ("A", "E", "likes"),
+    ]);
+
+    // knows* / likes can be rewritten to LStar.
+    let path = PathExpr::Sequence(
+        Box::new(PathExpr::ZeroOrMore(Box::new(label("knows")))),
+        Box::new(label("likes")),
+    );
+    let query = rq(named_ep("A"), path, var("y"));
+
+    let (default_result, optimized_result) = evaluate_default_and_cardinality(&graph, &query);
+    assert_eq!(default_result.nnz, 2);
+
+    let a_id = graph.get_node_id("A").expect("A should exist") as GrB_Index;
+    let d_id = graph.get_node_id("D").expect("D should exist") as GrB_Index;
+    let e_id = graph.get_node_id("E").expect("E should exist") as GrB_Index;
+
+    for result in [&default_result, &optimized_result] {
+        assert!(
+            matrix_entry_set(result, a_id, d_id),
+            "D should be reachable via knows*/likes"
+        );
+        assert!(
+            matrix_entry_set(result, a_id, e_id),
+            "E should be reachable via zero knows hops then likes"
+        );
+    }
+}
+
+#[test]
+fn test_cardinality_optimizer_give_same_result_unoptimized_way_2() {
+    let graph = build_graph(&[
+        ("A", "B", "knows"),
+        ("B", "C", "likes"),
+        ("C", "D", "knows"),
+    ]);
+
+    // knows / likes* / knows
+    let path = PathExpr::Sequence(
+        Box::new(PathExpr::Sequence(
+            Box::new(label("knows")),
+            Box::new(PathExpr::ZeroOrMore(Box::new(label("likes")))),
+        )),
+        Box::new(label("knows")),
+    );
+
+    let query = rq(named_ep("A"), path, var("y"));
+    let (default_result, optimized_result) = evaluate_default_and_cardinality(&graph, &query);
+
+    assert_eq!(default_result.nnz, 1);
+    let a_id = graph.get_node_id("A").expect("A should exist") as GrB_Index;
+    let d_id = graph.get_node_id("D").expect("D should exist") as GrB_Index;
+    assert!(
+        matrix_entry_set(&default_result, a_id, d_id),
+        "D should be reachable via knows/likes*/knows"
+    );
+    assert!(
+        matrix_entry_set(&optimized_result, a_id, d_id),
+        "D should be reachable via knows/likes*/knows"
+    );
+}
+
+#[test]
+fn test_cardinality_optimizer_give_same_result_unoptimized_way_3() {
+    let graph = build_graph(&[
+        ("A", "B", "knows"),
+        ("B", "C", "likes"),
+        ("B", "D", "hates"),
+    ]);
+
+    // knows / (likes | hates) can be rewritten by distributivity rules.
+    let path = PathExpr::Sequence(
+        Box::new(label("knows")),
+        Box::new(PathExpr::Alternative(
+            Box::new(label("likes")),
+            Box::new(label("hates")),
+        )),
+    );
+    let query = rq(named_ep("A"), path, var("y"));
+
+    let (default_result, optimized_result) = evaluate_default_and_cardinality(&graph, &query);
+    assert_eq!(default_result.nnz, 2);
+
+    let a_id = graph.get_node_id("A").expect("A should exist") as GrB_Index;
+    let c_id = graph.get_node_id("C").expect("C should exist") as GrB_Index;
+    let d_id = graph.get_node_id("D").expect("D should exist") as GrB_Index;
+
+    for result in [&default_result, &optimized_result] {
+        assert!(
+            matrix_entry_set(result, a_id, c_id),
+            "C should be reachable via knows/likes"
+        );
+        assert!(
+            matrix_entry_set(result, a_id, d_id),
+            "D should be reachable via knows/hates"
+        );
+    }
+}
