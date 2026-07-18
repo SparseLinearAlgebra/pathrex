@@ -101,7 +101,7 @@ pub struct QueryMetadata {
 impl QueryOutput {
     pub fn write_to_file(&self, path: &Path) -> Result<(), std::io::Error> {
         let json = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
-        fs::write(path, json)
+        write_json_to_file(path, json)
     }
 }
 
@@ -122,16 +122,34 @@ pub struct BenchMetadata {
     pub base_iri: Option<String>,
     pub num_nodes: usize,
     pub num_labels: usize,
-    pub sample_size: usize,
-    pub warm_up_secs: u64,
-    pub measurement_secs: u64,
+    pub bench_mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warm_up_runs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sample_size: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warm_up_secs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub measurement_secs: Option<u64>,
 }
 
 impl BenchOutput {
     pub fn write_to_file(&self, path: &Path) -> Result<(), std::io::Error> {
         let json = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
-        fs::write(path, json)
+        write_json_to_file(path, json)
     }
+}
+
+fn write_json_to_file(path: &Path, json: String) -> Result<(), std::io::Error> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, json)
 }
 
 #[cfg(test)]
@@ -177,5 +195,28 @@ mod tests {
         let r = AlgoResult::panic("kaboom".into());
         let v = serde_json::to_value(&r).expect("serialize");
         assert_eq!(v["status"], "panic");
+    }
+
+    #[test]
+    fn query_output_creates_parent_directory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let output_path = dir.path().join("nested").join("query.json");
+        let output = QueryOutput {
+            metadata: QueryMetadata {
+                timestamp: "now".into(),
+                graph_path: "graph".into(),
+                graph_format: "mm".into(),
+                queries_file: "queries".into(),
+                rpqmatrix_optimizer: Some("none".into()),
+                base_iri: None,
+                num_nodes: 0,
+                num_labels: 0,
+            },
+            results: Vec::new(),
+        };
+
+        output.write_to_file(&output_path).expect("write output");
+
+        assert!(output_path.exists());
     }
 }
