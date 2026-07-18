@@ -215,3 +215,31 @@ fn test_mm_graph_empty_label_handling() {
     let result = graph.get_graph("");
     assert!(result.is_err(), "Empty label should not exist in the graph");
 }
+
+#[test]
+fn test_mm_graph_correct_metadata() {
+    let mm = MatrixMarket::from_dir("tests/testdata/mm_small");
+    let graph = Graph::<InMemory>::try_from(mm).expect("Failed to load graph");
+
+    let result = graph
+        .get_metadata()
+        .expect("metadata should exist")
+        .matrix("knows")
+        .expect("matrix with metadata should exist");
+    assert!(
+        result.dimension == 4,
+        "dimension of matrix should be calculated correctly"
+    );
+    assert!(
+        result.nvals == 3,
+        "nonzero vals of matrix should be calculated correctly"
+    );
+    assert!(
+        result.nonzero_cols == 2,
+        "nonzero columns of matrix should be calculated correctly"
+    );
+    assert!(
+        result.nonzero_rows == 2,
+        "nonzero rows of matrix should be calculated correctly"
+    );
+}

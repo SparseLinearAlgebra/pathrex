@@ -454,7 +454,4 @@ mod tests {
         assert!(graph.get_graph("http://example.org/knows").is_ok());
         assert!(graph.get_graph("http://example.org/likes").is_ok());
     }
-
-    #[test]
-    fn test_metadata_from_mm() {}
 }
