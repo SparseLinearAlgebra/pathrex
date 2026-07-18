@@ -179,16 +179,16 @@ impl LagraphGraph {
 
     pub fn nonzero_cols(&self) -> Result<usize, GraphError> {
         let matrix: GrB_Matrix = unsafe { (*self.inner).A };
-        let res: usize = 0;
-        unsafe { LAGraph_RPQMatrix_reduce(&mut (res as u64), matrix, ByRows as u8) };
-        Ok(res)
+        let mut res: GrB_Index = 0;
+        unsafe { LAGraph_RPQMatrix_reduce(&mut res, matrix, ByRows as u8) };
+        Ok(res as usize)
     }
 
     pub fn nonzero_rows(&self) -> Result<usize, GraphError> {
         let matrix: GrB_Matrix = unsafe { (*self.inner).A };
-        let res: usize = 0;
-        unsafe { LAGraph_RPQMatrix_reduce(&mut (res as u64), matrix, ByCols as u8) };
-        Ok(res)
+        let mut res: GrB_Index = 0;
+        unsafe { LAGraph_RPQMatrix_reduce(&mut res, matrix, ByCols as u8) };
+        Ok(res as usize)
     }
 }
 
