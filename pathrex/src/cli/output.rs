@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
@@ -60,6 +60,14 @@ impl AlgoResult {
 pub struct AlgoTiming {
     pub total: TimingStats,
     pub ffi_only: TimingStats,
+    #[serde(skip)]
+    pub samples: Option<AlgoTimingSamples>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AlgoTimingSamples {
+    pub total_ns: Vec<f64>,
+    pub ffi_only_ns: Vec<f64>,
 }
 
 /// Timing statistics extracted from criterion estimates.
@@ -140,6 +148,91 @@ impl BenchOutput {
         let json = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
         write_json_to_file(path, json)
     }
+
+    pub fn write_samples_to_file(&self, path: &Path) -> Result<Option<PathBuf>, std::io::Error> {
+        let Some(samples) = BenchSamplesOutput::from_bench_output(self) else {
+            return Ok(None);
+        };
+        let samples_path = samples_path_for(path);
+        let json = serde_json::to_string_pretty(&samples).map_err(std::io::Error::other)?;
+        write_json_to_file(&samples_path, json)?;
+        Ok(Some(samples_path))
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct BenchSamplesOutput<'a> {
+    pub metadata: &'a BenchMetadata,
+    pub results: Vec<QuerySamples<'a>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct QuerySamples<'a> {
+    pub query_index: usize,
+    pub query_id: &'a str,
+    pub query_text: &'a str,
+    pub algorithms: HashMap<&'a str, AlgoSamples<'a>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AlgoSamples<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result_count: Option<usize>,
+    pub total_ns: &'a [f64],
+    pub ffi_only_ns: &'a [f64],
+}
+
+impl<'a> BenchSamplesOutput<'a> {
+    pub fn from_bench_output(output: &'a BenchOutput) -> Option<Self> {
+        let mut results = Vec::new();
+
+        for query in &output.results {
+            let mut algorithms = HashMap::new();
+            for (algo, result) in &query.algorithms {
+                let Some(timing) = &result.timing else {
+                    continue;
+                };
+                let Some(samples) = &timing.samples else {
+                    continue;
+                };
+                algorithms.insert(
+                    algo.as_str(),
+                    AlgoSamples {
+                        result_count: result.result_count,
+                        total_ns: &samples.total_ns,
+                        ffi_only_ns: &samples.ffi_only_ns,
+                    },
+                );
+            }
+
+            if !algorithms.is_empty() {
+                results.push(QuerySamples {
+                    query_index: query.query_index,
+                    query_id: &query.query_id,
+                    query_text: &query.query_text,
+                    algorithms,
+                });
+            }
+        }
+
+        (!results.is_empty()).then_some(Self {
+            metadata: &output.metadata,
+            results,
+        })
+    }
+}
+
+fn samples_path_for(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("bench_results.json");
+    let samples_name = file_name
+        .strip_suffix(".json")
+        .map(|stem| format!("{stem}.runs.json"))
+        .unwrap_or_else(|| format!("{file_name}.runs.json"));
+
+    path.with_file_name(samples_name)
 }
 
 fn write_json_to_file(path: &Path, json: String) -> Result<(), std::io::Error> {
@@ -173,6 +266,7 @@ mod tests {
                     stddev_ns: 0.0,
                     iterations: 10,
                 },
+                samples: None,
             }),
         );
 
@@ -218,5 +312,74 @@ mod tests {
         output.write_to_file(&output_path).expect("write output");
 
         assert!(output_path.exists());
+    }
+
+    #[test]
+    fn bench_output_writes_samples_next_to_output() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let output_path = dir.path().join("bench.json");
+        let output = BenchOutput {
+            metadata: BenchMetadata {
+                timestamp: "now".into(),
+                graph_path: "graph".into(),
+                graph_format: "mm".into(),
+                queries_file: "queries".into(),
+                rpqmatrix_optimizer: Some("none".into()),
+                base_iri: None,
+                num_nodes: 0,
+                num_labels: 0,
+                bench_mode: "fixed".into(),
+                runs: Some(2),
+                warm_up_runs: Some(0),
+                sample_size: None,
+                warm_up_secs: None,
+                measurement_secs: None,
+            },
+            results: vec![QueryResult {
+                query_index: 0,
+                query_id: "q0".into(),
+                query_text: "query".into(),
+                algorithms: HashMap::from([(
+                    "rpqmatrix".into(),
+                    AlgoResult::ok(
+                        Some(1),
+                        Some(AlgoTiming {
+                            total: TimingStats {
+                                mean_ns: 15.0,
+                                median_ns: 15.0,
+                                stddev_ns: 5.0,
+                                iterations: 2,
+                            },
+                            ffi_only: TimingStats {
+                                mean_ns: 4.0,
+                                median_ns: 4.0,
+                                stddev_ns: 1.0,
+                                iterations: 2,
+                            },
+                            samples: Some(AlgoTimingSamples {
+                                total_ns: vec![10.0, 20.0],
+                                ffi_only_ns: vec![3.0, 5.0],
+                            }),
+                        }),
+                    ),
+                )]),
+            }],
+        };
+
+        let samples_path = output
+            .write_samples_to_file(&output_path)
+            .expect("write samples")
+            .expect("samples path");
+        let samples_json = fs::read_to_string(samples_path).expect("read samples");
+        let value: serde_json::Value = serde_json::from_str(&samples_json).expect("json");
+
+        assert_eq!(
+            value["results"][0]["algorithms"]["rpqmatrix"]["total_ns"][0],
+            10.0
+        );
+        assert_eq!(
+            value["results"][0]["algorithms"]["rpqmatrix"]["ffi_only_ns"][1],
+            5.0
+        );
     }
 }
