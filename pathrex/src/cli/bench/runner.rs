@@ -9,7 +9,7 @@ use crate::cli::bench::error::BenchError;
 use crate::cli::bench::estimates::read_algo_timing;
 use crate::cli::checkpoint::Checkpointer;
 use crate::cli::loader::LoadedQuery;
-use crate::cli::output::{AlgoResult, AlgoTiming, QueryResult, TimingStats};
+use crate::cli::output::{AlgoResult, AlgoTiming, AlgoTimingSamples, QueryResult, TimingStats};
 use crate::eval::{Evaluator, PreparedEvaluator, ResultCount};
 use crate::graph::InMemoryGraph;
 use crate::rpq::{RpqError, RpqQuery};
@@ -184,6 +184,10 @@ where
         AlgoTiming {
             total: timing_stats(&total_samples),
             ffi_only: timing_stats(&ffi_samples),
+            samples: Some(AlgoTimingSamples {
+                total_ns: total_samples,
+                ffi_only_ns: ffi_samples,
+            }),
         },
     ))
 }

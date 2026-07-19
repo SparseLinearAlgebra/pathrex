@@ -349,10 +349,19 @@ fn run_bench_cmd(args: BenchArgs) -> Result<(), MainError> {
             path: args.output.clone(),
             source: e,
         })?;
+    let samples_path = output
+        .write_samples_to_file(Path::new(&args.output))
+        .map_err(|e| MainError::Output {
+            path: args.output.clone(),
+            source: e,
+        })?;
 
     eprintln!();
     eprintln!("=== Done ===");
     eprintln!("Results written to: {}", args.output);
+    if let Some(path) = samples_path {
+        eprintln!("Run samples written to: {}", path.display());
+    }
     if let Some(dir) = &args.criterion_dir {
         eprintln!("Criterion data in:  {dir}")
     }
