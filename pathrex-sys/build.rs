@@ -52,6 +52,7 @@ fn main() {
 
     let lagraph_src = manifest_dir.join(LAGRAPH_REL_PATH);
     assert_lagraph_submodule_present(&lagraph_src);
+    watch_lagraph_sources(&lagraph_src);
 
     let graphblas_src = fetch_graphblas(&out_dir);
     let graphblas_install = build_graphblas_static(&graphblas_src);
@@ -74,6 +75,44 @@ fn assert_lagraph_submodule_present(lagraph_src: &Path) {
              Run: git submodule update --init --recursive",
             marker.display()
         );
+    }
+}
+
+fn watch_lagraph_sources(lagraph_src: &Path) {
+    println!(
+        "cargo:rerun-if-changed={}",
+        lagraph_src.join("CMakeLists.txt").display()
+    );
+
+    for rel_dir in ["Config", "cmake_modules", "include", "src", "experimental"] {
+        let dir = lagraph_src.join(rel_dir);
+        if dir.exists() {
+            watch_files_with_extensions(&dir, &["c", "h", "cmake", "in", "txt"]);
+        }
+    }
+}
+
+fn watch_files_with_extensions(dir: &Path, extensions: &[&str]) {
+    let entries = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("failed to read directory {}: {e}", dir.display()));
+
+    for entry in entries {
+        let path = entry
+            .unwrap_or_else(|e| panic!("failed to read entry in {}: {e}", dir.display()))
+            .path();
+
+        if path.is_dir() {
+            watch_files_with_extensions(&path, extensions);
+            continue;
+        }
+
+        let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else {
+            continue;
+        };
+
+        if extensions.contains(&ext) {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
     }
 }
 
