@@ -2,7 +2,7 @@ use std::ptr::null_mut;
 
 use crate::eval::{PreparedEvaluator, ResultCount};
 use crate::graph::wrappers::ReduceType::ByCols;
-use crate::graph::{GraphError, GraphblasMatrix};
+use crate::graph::{GraphError, GraphblasMatrix, MatrixStorage, set_global_matrix_storage_hint};
 use crate::lagraph_sys::*;
 
 use crate::rpq::RpqError;
@@ -40,6 +40,7 @@ impl ResultCount for RpqMatrixResult {
 pub struct PreparedRpqMatrix {
     pub(super) plans: Vec<RPQMatrixPlan>,
     pub(super) owned_matrices: Vec<GrB_Matrix>,
+    pub(super) storage: MatrixStorage,
 }
 
 impl PreparedEvaluator for PreparedRpqMatrix {
@@ -47,6 +48,8 @@ impl PreparedEvaluator for PreparedRpqMatrix {
     type Error = RpqError;
 
     fn execute(&mut self) -> Result<RpqMatrixResult, RpqError> {
+        set_global_matrix_storage_hint(self.storage)?;
+
         let root_ptr = unsafe { self.plans.as_mut_ptr().add(self.plans.len() - 1) };
 
         let mut nnz: GrB_Index = 0;
