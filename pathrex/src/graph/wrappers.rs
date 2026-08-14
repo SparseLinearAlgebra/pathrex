@@ -9,7 +9,10 @@ use std::ffi::CString;
 use std::fs::File;
 use std::os::fd::IntoRawFd;
 use std::path::Path;
-use std::sync::Once;
+use std::sync::{
+    Once,
+    atomic::{AtomicU8, Ordering},
+};
 
 use crate::{
     graph::wrappers::ReduceType::{ByCols, ByRows},
@@ -20,6 +23,29 @@ use crate::{
 use super::GraphError;
 
 static GRB_INIT: Once = Once::new();
+static GLOBAL_MATRIX_STORAGE_HINT: AtomicU8 = AtomicU8::new(0);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MatrixStorage {
+    Csc,
+    Csr,
+}
+
+impl MatrixStorage {
+    fn as_hint_code(self) -> u8 {
+        match self {
+            MatrixStorage::Csc => 1,
+            MatrixStorage::Csr => 2,
+        }
+    }
+
+    fn as_rpq_storage(self) -> RPQMatrixStorage {
+        match self {
+            MatrixStorage::Csc => RPQMatrixStorage::RPQ_MATRIX_STORAGE_CSC,
+            MatrixStorage::Csr => RPQMatrixStorage::RPQ_MATRIX_STORAGE_CSR,
+        }
+    }
+}
 
 pub(crate) fn ensure_grb_init() -> Result<(), GraphError> {
     let mut result = Ok(());
@@ -27,6 +53,22 @@ pub(crate) fn ensure_grb_init() -> Result<(), GraphError> {
         result = unsafe { la_ok!(LAGraph_Init()) };
     });
     result
+}
+
+pub(crate) fn set_global_matrix_storage_hint(storage: MatrixStorage) -> Result<(), GraphError> {
+    let hint_code = storage.as_hint_code();
+    if GLOBAL_MATRIX_STORAGE_HINT.load(Ordering::Acquire) == hint_code {
+        return Ok(());
+    }
+
+    ensure_grb_init()?;
+    unsafe {
+        grb_ok!(LAGraph_RPQMatrix_SetGlobalStorageOrientation(
+            storage.as_rpq_storage(),
+        ))?
+    };
+    GLOBAL_MATRIX_STORAGE_HINT.store(hint_code, Ordering::Release);
+    Ok(())
 }
 
 /// Compute a balanced `(outer, inner)` split for LAGraph's two-level threading.
@@ -271,6 +313,28 @@ impl GraphblasMatrix {
     /// [`Drop`] will call `GrB_Matrix_free` when the guard is dropped.
     pub fn from_raw(raw: GrB_Matrix) -> Self {
         Self { inner: raw }
+    }
+
+    pub fn set_storage_orientation(&self, storage: MatrixStorage) -> Result<(), GraphError> {
+        unsafe {
+            grb_ok!(LAGraph_RPQMatrix_SetStorageOrientation(
+                self.inner,
+                storage.as_rpq_storage(),
+            ))?
+        };
+        Ok(())
+    }
+
+    pub fn dup_with_storage_orientation(&self, storage: MatrixStorage) -> Result<Self, GraphError> {
+        let mut raw: GrB_Matrix = std::ptr::null_mut();
+        unsafe {
+            grb_ok!(LAGraph_RPQMatrix_DupWithStorageOrientation(
+                &mut raw,
+                self.inner,
+                storage.as_rpq_storage(),
+            ))?
+        };
+        Ok(Self { inner: raw })
     }
 }
 

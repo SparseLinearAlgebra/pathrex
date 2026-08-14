@@ -3,7 +3,7 @@ use std::ptr::null_mut;
 use egg::{Id, RecExpr};
 
 use super::plan::{LabelMeta, RpqPlan};
-use crate::graph::GraphDecomposition;
+use crate::graph::{GraphDecomposition, MatrixStorage};
 use crate::grb_ok;
 use crate::lagraph_sys::*;
 use crate::rpq::{Endpoint, PathExpr, RpqError, RpqQuery};
@@ -101,9 +101,10 @@ pub fn query_to_expr<G: GraphDecomposition>(
 ///
 /// Returns the plan array and a list of owned diagonal matrices that must be
 /// freed after evaluation.
-pub fn materialize<G: GraphDecomposition>(
+pub fn materialize_with_storage<G: GraphDecomposition>(
     expr: &RecExpr<RpqPlan>,
     graph: &G,
+    storage: MatrixStorage,
 ) -> Result<(Vec<RPQMatrixPlan>, Vec<GrB_Matrix>), RpqError> {
     let null_plan = RPQMatrixPlan {
         op: RPQMatrixOp::RPQ_MATRIX_OP_LABEL,
@@ -119,7 +120,7 @@ pub fn materialize<G: GraphDecomposition>(
     for (id, node) in expr.as_ref().iter().enumerate() {
         plans[id] = match node {
             RpqPlan::Label(label) => {
-                let lg = graph.get_graph(&label.name)?;
+                let lg = graph.get_graph_with_storage(&label.name, storage)?;
                 let mat = unsafe { (*lg.inner).A };
                 RPQMatrixPlan {
                     op: RPQMatrixOp::RPQ_MATRIX_OP_LABEL,

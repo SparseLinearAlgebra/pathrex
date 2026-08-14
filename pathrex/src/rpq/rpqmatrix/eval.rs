@@ -1,10 +1,10 @@
-use super::expr::{materialize, query_to_expr};
+use super::expr::{materialize_with_storage, query_to_expr};
 use super::optimize::{OptimizationStrategy, optimize_expr_cardinality};
 use super::result::{PreparedRpqMatrix, RpqMatrixResult};
 /// RPQ evaluator backed by `LAGraph_RPQMatrix`.
 use crate::eval::Evaluator;
-use crate::graph::GraphDecomposition;
-use crate::rpq::{RpqError, RpqQuery};
+use crate::graph::{GraphDecomposition, MatrixStorage, set_global_matrix_storage_hint};
+use crate::rpq::{Endpoint, RpqError, RpqQuery};
 
 #[derive(Clone, Copy)]
 pub struct RpqMatrixEvaluator {
@@ -28,6 +28,13 @@ impl Default for RpqMatrixEvaluator {
     }
 }
 
+fn storage_for_query(query: &RpqQuery) -> MatrixStorage {
+    match (&query.subject, &query.object) {
+        (Endpoint::Variable(_), Endpoint::Named(_)) => MatrixStorage::Csc,
+        _ => MatrixStorage::Csr,
+    }
+}
+
 impl Evaluator for RpqMatrixEvaluator {
     type Query = RpqQuery;
     type Result = RpqMatrixResult;
@@ -39,6 +46,9 @@ impl Evaluator for RpqMatrixEvaluator {
         query: &RpqQuery,
         graph: &G,
     ) -> Result<PreparedRpqMatrix, RpqError> {
+        let storage = storage_for_query(query);
+        set_global_matrix_storage_hint(storage)?;
+
         let mut expr = query_to_expr(query, graph)?;
         match self.optimizer {
             OptimizationStrategy::NoOpt => {}
@@ -48,11 +58,12 @@ impl Evaluator for RpqMatrixEvaluator {
             _ => todo!(),
         }
 
-        let (plans, owned_matrices) = materialize(&expr, graph)?;
+        let (plans, owned_matrices) = materialize_with_storage(&expr, graph, storage)?;
 
         Ok(PreparedRpqMatrix {
             plans,
             owned_matrices,
+            storage,
         })
     }
 }

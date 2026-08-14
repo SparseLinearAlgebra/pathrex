@@ -4,8 +4,10 @@ pub mod inmemory;
 pub mod wrappers;
 
 pub use inmemory::{InMemory, InMemoryBuilder, InMemoryGraph};
-pub use wrappers::{GraphblasMatrix, GraphblasVector, LagraphGraph, load_mm_file};
-pub(crate) use wrappers::{ThreadScope, compute_outer_inner, ensure_grb_init};
+pub use wrappers::{GraphblasMatrix, GraphblasVector, LagraphGraph, MatrixStorage, load_mm_file};
+pub(crate) use wrappers::{
+    ThreadScope, compute_outer_inner, ensure_grb_init, set_global_matrix_storage_hint,
+};
 
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -77,6 +79,16 @@ pub trait GraphBuilder: Default + Sized {
 pub trait GraphDecomposition {
     /// Returns the [`LagraphGraph`] for `label`.
     fn get_graph(&self, label: &str) -> Result<Arc<LagraphGraph>, GraphError>;
+
+    /// Returns the [`LagraphGraph`] for `label` in a preferred storage orientation.
+    /// Backends that do not maintain multiple orientations may return their default graph.
+    fn get_graph_with_storage(
+        &self,
+        label: &str,
+        _storage: MatrixStorage,
+    ) -> Result<Arc<LagraphGraph>, GraphError> {
+        self.get_graph(label)
+    }
 
     /// Translates a string ID to a contiguous matrix index.
     fn get_node_id(&self, string_id: &str) -> Option<usize>;
