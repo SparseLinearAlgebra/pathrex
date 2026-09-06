@@ -1,7 +1,10 @@
 use egg::{Extractor, RecExpr, Runner};
+use std::sync::LazyLock;
 
 use super::cost::CardinalityCostFn;
 use super::plan::{RpqPlan, make_rules};
+
+static RULES: LazyLock<Vec<egg::Rewrite<RpqPlan, ()>>> = LazyLock::new(make_rules);
 
 #[derive(Clone, Copy)]
 pub enum OptimizationStrategy {
@@ -16,11 +19,11 @@ pub(super) fn optimize_expr_cardinality(
     expr: RecExpr<RpqPlan>,
     graph_size: usize,
 ) -> RecExpr<RpqPlan> {
-    let rules = make_rules();
+    let rules = &*RULES;
     let runner = Runner::default()
         .with_explanations_disabled()
         .with_expr(&expr)
-        .run(&rules);
+        .run(rules);
 
     let extractor = Extractor::new(
         &runner.egraph,
