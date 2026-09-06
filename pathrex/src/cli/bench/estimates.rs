@@ -87,7 +87,11 @@ pub fn read_timing_stats(
 pub fn read_algo_timing(criterion_dir: &Path, group: &str) -> Result<AlgoTiming, BenchError> {
     let total = read_timing_stats(criterion_dir, group, "eval_total")?;
     let ffi_only = read_timing_stats(criterion_dir, group, "eval_ffi_only")?;
-    Ok(AlgoTiming { total, ffi_only })
+    Ok(AlgoTiming {
+        total,
+        ffi_only,
+        samples: None,
+    })
 }
 
 #[cfg(test)]

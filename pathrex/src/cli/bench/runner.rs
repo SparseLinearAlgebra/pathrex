@@ -1,15 +1,15 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use criterion::{Criterion, black_box};
+use criterion::{BatchSize, Criterion, black_box};
 
-use crate::cli::args::{Algo, BenchArgs};
+use crate::cli::args::{Algo, BenchArgs, BenchMode};
 use crate::cli::bench::error::BenchError;
 use crate::cli::bench::estimates::read_algo_timing;
 use crate::cli::checkpoint::Checkpointer;
 use crate::cli::loader::LoadedQuery;
-use crate::cli::output::{AlgoResult, QueryResult};
+use crate::cli::output::{AlgoResult, AlgoTiming, AlgoTimingSamples, QueryResult, TimingStats};
 use crate::eval::{Evaluator, PreparedEvaluator, ResultCount};
 use crate::graph::InMemoryGraph;
 use crate::rpq::{RpqError, RpqQuery};
@@ -41,9 +41,9 @@ impl GroupOutput {
 
 pub(crate) fn build_criterion(args: &BenchArgs, output_dir: &Path) -> Criterion {
     let c = Criterion::default()
-        .sample_size(args.sample_size)
-        .warm_up_time(Duration::from_secs(args.warm_up))
-        .measurement_time(Duration::from_secs(args.measurement))
+        .sample_size(args.criterion_sample_size())
+        .warm_up_time(Duration::from_secs(args.criterion_warm_up_secs()))
+        .measurement_time(Duration::from_secs(args.criterion_measurement_secs()))
         .output_directory(output_dir);
     if args.plots {
         c.with_plots()
@@ -68,7 +68,10 @@ where
     E: Evaluator<Query = RpqQuery, Error = RpqError> + Copy,
     E::Result: ResultCount,
 {
-    let mut prepared = evaluator.prepare(query, graph)?;
+    // Validate preparation once so query/graph errors are reported through the
+    // normal benchmark error path. The `eval_ffi_only` benchmark below creates a
+    // fresh prepared state per measured iteration.
+    let _prepared = evaluator.prepare(query, graph)?;
     let group = group_name(query_index, algo_name);
 
     let output = match GroupOutput::for_group(args) {
@@ -89,15 +92,105 @@ where
         });
 
         g.bench_function("eval_ffi_only", |b| {
-            b.iter(|| {
-                let _ = black_box(prepared.execute());
-            });
+            b.iter_batched(
+                || {
+                    evaluator
+                        .prepare(query, graph)
+                        .expect("prepare should keep succeeding during benchmark")
+                },
+                |mut prepared| {
+                    let _ = black_box(prepared.execute());
+                },
+                BatchSize::PerIteration,
+            );
         });
 
         g.finish();
     }
 
     Ok(read_algo_timing(&output_path, &group))
+}
+
+fn timing_stats(samples_ns: &[f64]) -> TimingStats {
+    let mut sorted = samples_ns.to_vec();
+    sorted.sort_by(f64::total_cmp);
+
+    let len = sorted.len();
+    let mean = sorted.iter().sum::<f64>() / len as f64;
+    let median = if len % 2 == 0 {
+        (sorted[len / 2 - 1] + sorted[len / 2]) / 2.0
+    } else {
+        sorted[len / 2]
+    };
+    let variance = sorted
+        .iter()
+        .map(|sample| {
+            let diff = sample - mean;
+            diff * diff
+        })
+        .sum::<f64>()
+        / len as f64;
+
+    TimingStats {
+        mean_ns: mean,
+        median_ns: median,
+        stddev_ns: variance.sqrt(),
+        iterations: len,
+    }
+}
+
+fn elapsed_ns(start: Instant) -> f64 {
+    start.elapsed().as_nanos() as f64
+}
+
+fn run_fixed_group<E>(
+    args: &BenchArgs,
+    evaluator: E,
+    query: &RpqQuery,
+    graph: &InMemoryGraph,
+) -> Result<(usize, AlgoTiming), RpqError>
+where
+    E: Evaluator<Query = RpqQuery, Error = RpqError> + Copy,
+    E::Result: ResultCount,
+{
+    for _ in 0..args.fixed_warm_up_runs() {
+        let _ = black_box(evaluator.evaluate(query, graph)?);
+    }
+
+    let mut total_samples = Vec::with_capacity(args.fixed_runs() as usize);
+    let mut result_count = None;
+    for _ in 0..args.fixed_runs() {
+        let start = Instant::now();
+        let result = black_box(evaluator.evaluate(query, graph)?);
+        total_samples.push(elapsed_ns(start));
+        result_count = Some(result.result_count().map_err(RpqError::Graph)?);
+    }
+
+    for _ in 0..args.fixed_warm_up_runs() {
+        let mut prepared = evaluator.prepare(query, graph)?;
+        let _ = black_box(prepared.execute()?);
+    }
+
+    let mut ffi_samples = Vec::with_capacity(args.fixed_runs() as usize);
+    for _ in 0..args.fixed_runs() {
+        let mut prepared = evaluator.prepare(query, graph)?;
+        let start = Instant::now();
+        let result = black_box(prepared.execute()?);
+        ffi_samples.push(elapsed_ns(start));
+        drop(result);
+    }
+
+    Ok((
+        result_count.unwrap_or(0),
+        AlgoTiming {
+            total: timing_stats(&total_samples),
+            ffi_only: timing_stats(&ffi_samples),
+            samples: Some(AlgoTimingSamples {
+                total_ns: total_samples,
+                ffi_only_ns: ffi_samples,
+            }),
+        },
+    ))
 }
 
 /// Run the bench loop for every query in `queries` for one evaluator.
@@ -150,9 +243,18 @@ where
         eprintln!("[query #{}] id={}", idx, loaded.id);
         eprintln!("  [bench] algo={algo_name}");
 
-        match run_benchmark_group(args, algo_name, evaluator, query, graph, idx) {
-            Ok(Ok(timing)) => {
-                algorithms.insert(algo_name.to_string(), AlgoResult::ok(None, Some(timing)));
+        let bench_result = match args.bench_mode {
+            BenchMode::Fixed => run_fixed_group(args, evaluator, query, graph)
+                .map(|(count, timing)| Ok((Some(count), timing))),
+            BenchMode::Criterion => {
+                run_benchmark_group(args, algo_name, evaluator, query, graph, idx)
+                    .map(|result| result.map(|timing| (None, timing)))
+            }
+        };
+
+        match bench_result {
+            Ok(Ok((count, timing))) => {
+                algorithms.insert(algo_name.to_string(), AlgoResult::ok(count, Some(timing)));
             }
             Ok(Err(e)) => return Err(e),
             Err(e) => {

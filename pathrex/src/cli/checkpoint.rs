@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use super::args::Algo;
+use super::args::{Algo, BenchArgs, BenchMode, RpqMatrixOptimizer};
 
 /// Persistent checkpoint state written to disk as JSON.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,7 +25,57 @@ pub struct Checkpoint {
     pub graph_path: String,
     pub queries_file: String,
     pub algorithms: Vec<Algo>,
+    #[serde(default)]
+    pub rpqmatrix_optimizer: RpqMatrixOptimizer,
+    #[serde(default)]
+    pub bench_config: BenchRunConfig,
     pub completed: Vec<QueryCompletion>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BenchRunConfig {
+    pub bench_mode: BenchMode,
+    pub runs: Option<u64>,
+    pub warm_up_runs: Option<u64>,
+    pub sample_size: Option<usize>,
+    pub warm_up_secs: Option<u64>,
+    pub measurement_secs: Option<u64>,
+}
+
+impl BenchRunConfig {
+    pub fn from_args(args: &BenchArgs) -> Self {
+        match args.bench_mode {
+            BenchMode::Fixed => Self {
+                bench_mode: args.bench_mode,
+                runs: Some(args.fixed_runs()),
+                warm_up_runs: Some(args.fixed_warm_up_runs()),
+                sample_size: None,
+                warm_up_secs: None,
+                measurement_secs: None,
+            },
+            BenchMode::Criterion => Self {
+                bench_mode: args.bench_mode,
+                runs: None,
+                warm_up_runs: None,
+                sample_size: Some(args.criterion_sample_size()),
+                warm_up_secs: Some(args.criterion_warm_up_secs()),
+                measurement_secs: Some(args.criterion_measurement_secs()),
+            },
+        }
+    }
+}
+
+impl Default for BenchRunConfig {
+    fn default() -> Self {
+        Self {
+            bench_mode: BenchMode::Fixed,
+            runs: Some(BenchArgs::DEFAULT_FIXED_RUNS),
+            warm_up_runs: Some(BenchArgs::DEFAULT_FIXED_WARM_UP_RUNS),
+            sample_size: None,
+            warm_up_secs: None,
+            measurement_secs: None,
+        }
+    }
 }
 
 /// Tracks which algorithms have been completed for a single query.
@@ -37,12 +87,20 @@ pub struct QueryCompletion {
 
 impl Checkpoint {
     /// Create a fresh checkpoint for a new benchmark run.
-    pub fn new(graph_path: &str, queries_file: &str, algorithms: &[Algo]) -> Self {
+    pub fn new(
+        graph_path: &str,
+        queries_file: &str,
+        algorithms: &[Algo],
+        rpqmatrix_optimizer: RpqMatrixOptimizer,
+        bench_config: BenchRunConfig,
+    ) -> Self {
         Self {
             version: 1,
             graph_path: graph_path.to_string(),
             queries_file: queries_file.to_string(),
             algorithms: algorithms.to_vec(),
+            rpqmatrix_optimizer,
+            bench_config,
             completed: Vec::new(),
         }
     }
@@ -65,6 +123,8 @@ impl Checkpoint {
         graph_path: &str,
         queries_file: &str,
         algorithms: &[Algo],
+        rpqmatrix_optimizer: RpqMatrixOptimizer,
+        bench_config: &BenchRunConfig,
     ) -> Result<(), CheckpointError> {
         if self.graph_path != graph_path {
             return Err(CheckpointError::Mismatch(format!(
@@ -86,12 +146,32 @@ impl Checkpoint {
                 self.algorithms, algorithms
             )));
         }
+        if self.rpqmatrix_optimizer != rpqmatrix_optimizer {
+            return Err(CheckpointError::Mismatch(format!(
+                "rpqmatrix_optimizer: checkpoint has '{}', current is '{}'",
+                self.rpqmatrix_optimizer, rpqmatrix_optimizer
+            )));
+        }
+        if &self.bench_config != bench_config {
+            return Err(CheckpointError::Mismatch(format!(
+                "bench_config: checkpoint has {:?}, current is {:?}",
+                self.bench_config, bench_config
+            )));
+        }
         Ok(())
     }
 
     /// Save the checkpoint to disk.
     pub fn save(&self, path: &Path) -> Result<(), CheckpointError> {
         let json = serde_json::to_string_pretty(self).map_err(CheckpointError::Serialize)?;
+
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            fs::create_dir_all(parent)
+                .map_err(|e| CheckpointError::Io(parent.display().to_string(), e))?;
+        }
 
         // Write to a temp file first, then rename for atomicity.
         let tmp_path = path.with_extension("json.tmp");
@@ -140,21 +220,37 @@ impl Checkpoint {
 /// Runtime owner for a [`Checkpoint`] paired with its on-disk path.
 pub struct Checkpointer {
     inner: Checkpoint,
-    path: PathBuf,
+    path: Option<PathBuf>,
 }
 
 impl Checkpointer {
     /// Create a new checkpointer with no completions.
-    pub fn fresh(graph_path: &str, queries_file: &str, algorithms: &[Algo], path: PathBuf) -> Self {
+    pub fn fresh(
+        graph_path: &str,
+        queries_file: &str,
+        algorithms: &[Algo],
+        rpqmatrix_optimizer: RpqMatrixOptimizer,
+        bench_config: BenchRunConfig,
+        path: Option<PathBuf>,
+    ) -> Self {
         Self {
-            inner: Checkpoint::new(graph_path, queries_file, algorithms),
+            inner: Checkpoint::new(
+                graph_path,
+                queries_file,
+                algorithms,
+                rpqmatrix_optimizer,
+                bench_config,
+            ),
             path,
         }
     }
 
     /// Wrap an existing [`Checkpoint`] (e.g. one loaded from disk).
     pub fn with_inner(inner: Checkpoint, path: PathBuf) -> Self {
-        Self { inner, path }
+        Self {
+            inner,
+            path: Some(path),
+        }
     }
 
     /// Number of queries that have *all* requested algorithms done.
@@ -184,7 +280,10 @@ impl Checkpointer {
         algo: &Algo,
     ) -> Result<(), CheckpointError> {
         self.inner.mark_algo_done(query_index, algo);
-        self.inner.save(&self.path)
+        if let Some(path) = &self.path {
+            self.inner.save(path)?;
+        }
+        Ok(())
     }
 }
 

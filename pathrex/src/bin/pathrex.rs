@@ -16,7 +16,9 @@
 //! cargo run --release --bin pathrex --features bench -- bench \
 //!   --graph tests/testdata/mm_graph \
 //!   --queries tests/testdata/cases/any-any/queries.txt \
-//!   --algo nfa rpqmatrix \
+//!   --algo nfarpq rpqmatrix \
+//!   --bench-mode criterion \
+//!   --rpqmatrix-optimizer cardinality \
 //!   --output results.json
 //! ```
 
@@ -27,9 +29,12 @@ use chrono::Utc;
 use clap::Parser;
 use thiserror::Error;
 
-use pathrex::cli::args::{BenchArgs, Cli, Commands, QueryArgs};
+use pathrex::cli::args::{
+    Algo, BenchArgs, BenchMode, Cli, Commands, CommonArgs, GraphFormat, QueryArgs,
+    RpqMatrixOptimizer,
+};
 use pathrex::cli::bench::BenchError;
-use pathrex::cli::checkpoint::{Checkpoint, CheckpointError, Checkpointer};
+use pathrex::cli::checkpoint::{BenchRunConfig, Checkpoint, CheckpointError, Checkpointer};
 use pathrex::cli::dispatch::{dispatch_bench, dispatch_query};
 use pathrex::cli::loader::{GraphLoadError, LoadedQuery, load_graph, load_queries};
 use pathrex::cli::output::{BenchMetadata, BenchOutput, QueryMetadata, QueryOutput};
@@ -55,6 +60,8 @@ enum MainError {
         #[source]
         source: std::io::Error,
     },
+    #[error("invalid arguments: {0}")]
+    InvalidArgs(String),
 }
 
 fn main() {
@@ -78,6 +85,75 @@ fn run() -> Result<(), MainError> {
     }
 }
 
+fn validate_common_args(common: &CommonArgs) -> Result<(), MainError> {
+    if common.rpqmatrix_optimizer == RpqMatrixOptimizer::None {
+        return Ok(());
+    }
+
+    if !common.algo.contains(&Algo::Rpqmatrix) {
+        return Err(MainError::InvalidArgs(
+            "--rpqmatrix-optimizer can only be used when --algo includes rpqmatrix".to_string(),
+        ));
+    }
+
+    if common.format != GraphFormat::Mm {
+        return Err(MainError::InvalidArgs(
+            "--rpqmatrix-optimizer can only be used with --format mm".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_bench_args(args: &BenchArgs) -> Result<(), MainError> {
+    validate_common_args(&args.common)?;
+
+    if args.resume && args.checkpoint.is_none() {
+        return Err(MainError::InvalidArgs(
+            "--resume requires --checkpoint".to_string(),
+        ));
+    }
+
+    match args.bench_mode {
+        BenchMode::Fixed => {
+            if args.criterion_dir.is_some()
+                || args.plots
+                || args.sample_size.is_some()
+                || args.warm_up.is_some()
+                || args.measurement.is_some()
+            {
+                return Err(MainError::InvalidArgs(
+                    "criterion options can only be used with --bench-mode criterion".to_string(),
+                ));
+            }
+            if args.fixed_runs() == 0 {
+                return Err(MainError::InvalidArgs(
+                    "--runs must be greater than 0".to_string(),
+                ));
+            }
+        }
+        BenchMode::Criterion => {
+            if args.runs.is_some() || args.warm_up_runs.is_some() {
+                return Err(MainError::InvalidArgs(
+                    "fixed-run options can only be used with --bench-mode fixed".to_string(),
+                ));
+            }
+            if args.plots && args.criterion_dir.is_none() {
+                return Err(MainError::InvalidArgs(
+                    "--plots requires --criterion-dir".to_string(),
+                ));
+            }
+            if args.criterion_sample_size() < 10 {
+                return Err(MainError::InvalidArgs(
+                    "--sample-size must be at least 10 for criterion".to_string(),
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn load_query_file(path: &str, base_iri: Option<&str>) -> Result<Vec<LoadedQuery>, MainError> {
     load_queries(Path::new(path), base_iri).map_err(|e| MainError::Queries {
         path: path.to_string(),
@@ -87,12 +163,14 @@ fn load_query_file(path: &str, base_iri: Option<&str>) -> Result<Vec<LoadedQuery
 
 fn run_query_cmd(args: QueryArgs) -> Result<(), MainError> {
     let common = &args.common;
+    validate_common_args(common)?;
 
     eprintln!("=== pathrex query ===");
     eprintln!("Graph:   {}", common.graph);
     eprintln!("Format:  {}", common.format);
     eprintln!("Queries: {}", common.queries);
     eprintln!("Algos:   {:?}", common.algo);
+    eprintln!("RPQMatrix optimizer: {}", common.rpqmatrix_optimizer);
     eprintln!();
 
     eprintln!("[1/2] Loading graph...");
@@ -127,6 +205,7 @@ fn run_query_cmd(args: QueryArgs) -> Result<(), MainError> {
                 graph_path: common.graph.clone(),
                 graph_format: common.format.to_string(),
                 queries_file: common.queries.clone(),
+                rpqmatrix_optimizer: Some(common.rpqmatrix_optimizer.to_string()),
                 base_iri: common.base_iri.clone(),
                 num_nodes: graph.num_nodes(),
                 num_labels: graph.num_labels(),
@@ -147,48 +226,73 @@ fn run_query_cmd(args: QueryArgs) -> Result<(), MainError> {
 
 fn build_checkpointer(args: &BenchArgs, queries_len: usize) -> Result<Checkpointer, MainError> {
     let common = &args.common;
-    let path = PathBuf::from(&args.checkpoint);
+    let bench_config = BenchRunConfig::from_args(args);
 
-    if args.resume {
-        match Checkpoint::load(&path)? {
-            Some(cp) => {
-                cp.validate(&common.graph, &common.queries, &common.algo)?;
-                let cper = Checkpointer::with_inner(cp, path);
-                eprintln!(
-                    "  resuming: {}/{} queries fully done",
-                    cper.fully_done_count(&common.algo),
-                    queries_len
-                );
-                Ok(cper)
+    if let Some(checkpoint) = &args.checkpoint {
+        let path = PathBuf::from(checkpoint);
+        if args.resume {
+            match Checkpoint::load(&path)? {
+                Some(cp) => {
+                    cp.validate(
+                        &common.graph,
+                        &common.queries,
+                        &common.algo,
+                        common.rpqmatrix_optimizer,
+                        &bench_config,
+                    )?;
+                    let cper = Checkpointer::with_inner(cp, path);
+                    eprintln!(
+                        "  resuming: {}/{} queries fully done",
+                        cper.fully_done_count(&common.algo),
+                        queries_len
+                    );
+                    Ok(cper)
+                }
+                None => {
+                    eprintln!("  no checkpoint file found, starting fresh");
+                    Ok(Checkpointer::fresh(
+                        &common.graph,
+                        &common.queries,
+                        &common.algo,
+                        common.rpqmatrix_optimizer,
+                        bench_config,
+                        Some(path),
+                    ))
+                }
             }
-            None => {
-                eprintln!("  no checkpoint file found, starting fresh");
-                Ok(Checkpointer::fresh(
-                    &common.graph,
-                    &common.queries,
-                    &common.algo,
-                    path,
-                ))
-            }
+        } else {
+            Ok(Checkpointer::fresh(
+                &common.graph,
+                &common.queries,
+                &common.algo,
+                common.rpqmatrix_optimizer,
+                bench_config,
+                Some(path),
+            ))
         }
     } else {
         Ok(Checkpointer::fresh(
             &common.graph,
             &common.queries,
             &common.algo,
-            path,
+            common.rpqmatrix_optimizer,
+            bench_config,
+            None,
         ))
     }
 }
 
 fn run_bench_cmd(args: BenchArgs) -> Result<(), MainError> {
     let common = &args.common;
+    validate_bench_args(&args)?;
 
     eprintln!("=== pathrex bench ===");
     eprintln!("Graph:      {}", common.graph);
     eprintln!("Format:     {}", common.format);
     eprintln!("Queries:    {}", common.queries);
     eprintln!("Algos:      {:?}", common.algo);
+    eprintln!("Bench mode: {}", args.bench_mode);
+    eprintln!("RPQMatrix optimizer: {}", common.rpqmatrix_optimizer);
     eprintln!("Output:     {}", args.output);
     eprintln!();
 
@@ -223,11 +327,18 @@ fn run_bench_cmd(args: BenchArgs) -> Result<(), MainError> {
             graph_format: common.format.to_string(),
             queries_file: common.queries.clone(),
             base_iri: common.base_iri.clone(),
+            rpqmatrix_optimizer: Some(common.rpqmatrix_optimizer.to_string()),
             num_nodes: graph.num_nodes(),
             num_labels: graph.num_labels(),
-            sample_size: args.sample_size,
-            warm_up_secs: args.warm_up,
-            measurement_secs: args.measurement,
+            bench_mode: args.bench_mode.to_string(),
+            runs: (args.bench_mode == BenchMode::Fixed).then(|| args.fixed_runs()),
+            warm_up_runs: (args.bench_mode == BenchMode::Fixed).then(|| args.fixed_warm_up_runs()),
+            sample_size: (args.bench_mode == BenchMode::Criterion)
+                .then(|| args.criterion_sample_size()),
+            warm_up_secs: (args.bench_mode == BenchMode::Criterion)
+                .then(|| args.criterion_warm_up_secs()),
+            measurement_secs: (args.bench_mode == BenchMode::Criterion)
+                .then(|| args.criterion_measurement_secs()),
         },
         results,
     };
@@ -238,10 +349,19 @@ fn run_bench_cmd(args: BenchArgs) -> Result<(), MainError> {
             path: args.output.clone(),
             source: e,
         })?;
+    let samples_path = output
+        .write_samples_to_file(Path::new(&args.output))
+        .map_err(|e| MainError::Output {
+            path: args.output.clone(),
+            source: e,
+        })?;
 
     eprintln!();
     eprintln!("=== Done ===");
     eprintln!("Results written to: {}", args.output);
+    if let Some(path) = samples_path {
+        eprintln!("Run samples written to: {}", path.display());
+    }
     if let Some(dir) = &args.criterion_dir {
         eprintln!("Criterion data in:  {dir}")
     }

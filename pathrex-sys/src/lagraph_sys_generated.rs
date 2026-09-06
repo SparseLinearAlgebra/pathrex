@@ -159,6 +159,9 @@ unsafe extern "C" {
     pub fn GrB_Matrix_dup(C: *mut GrB_Matrix, A: GrB_Matrix) -> GrB_Info;
 }
 unsafe extern "C" {
+    pub fn GrB_Matrix_nrows(nrows: *mut GrB_Index, A: GrB_Matrix) -> GrB_Info;
+}
+unsafe extern "C" {
     pub fn GrB_Matrix_nvals(nvals: *mut GrB_Index, A: GrB_Matrix) -> GrB_Info;
 }
 unsafe extern "C" {
@@ -319,6 +322,28 @@ pub struct RPQMatrixPlan {
     pub rhs: *mut RPQMatrixPlan,
     pub mat: GrB_Matrix,
     pub res_mat: GrB_Matrix,
+}
+#[repr(u32)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+pub enum RPQMatrixStorage {
+    RPQ_MATRIX_STORAGE_CSC = 1,
+    RPQ_MATRIX_STORAGE_CSR = 2,
+}
+unsafe extern "C" {
+    pub fn LAGraph_RPQMatrix_SetGlobalStorageOrientation(storage: RPQMatrixStorage) -> GrB_Info;
+}
+unsafe extern "C" {
+    pub fn LAGraph_RPQMatrix_SetStorageOrientation(
+        mat: GrB_Matrix,
+        storage: RPQMatrixStorage,
+    ) -> GrB_Info;
+}
+unsafe extern "C" {
+    pub fn LAGraph_RPQMatrix_DupWithStorageOrientation(
+        dst: *mut GrB_Matrix,
+        src: GrB_Matrix,
+        storage: RPQMatrixStorage,
+    ) -> GrB_Info;
 }
 unsafe extern "C" {
     pub fn LAGraph_RPQMatrix(
