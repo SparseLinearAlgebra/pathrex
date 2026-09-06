@@ -175,8 +175,9 @@ where
     for _ in 0..args.fixed_runs() {
         let mut prepared = evaluator.prepare(query, graph)?;
         let start = Instant::now();
-        let _ = black_box(prepared.execute()?);
+        let result = black_box(prepared.execute()?);
         ffi_samples.push(elapsed_ns(start));
+        drop(result);
     }
 
     Ok((
