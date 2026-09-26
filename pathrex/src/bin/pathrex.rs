@@ -18,7 +18,7 @@
 //!   --queries tests/testdata/cases/any-any/queries.txt \
 //!   --algo nfarpq rpqmatrix \
 //!   --bench-mode criterion \
-//!   --rpqmatrix-optimizer cardinality \
+//!   --rpqmatrix-optimizer join \
 //!   --output results.json
 //! ```
 

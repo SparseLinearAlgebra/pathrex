@@ -65,7 +65,7 @@ fn run_benchmark_group<E>(
     query_index: usize,
 ) -> Result<Result<crate::cli::output::AlgoTiming, BenchError>, RpqError>
 where
-    E: Evaluator<Query = RpqQuery, Error = RpqError> + Copy,
+    E: Evaluator<Query = RpqQuery, Error = RpqError>,
     E::Result: ResultCount,
 {
     // Validate preparation once so query/graph errors are reported through the
@@ -150,7 +150,7 @@ fn run_fixed_group<E>(
     graph: &InMemoryGraph,
 ) -> Result<(usize, AlgoTiming), RpqError>
 where
-    E: Evaluator<Query = RpqQuery, Error = RpqError> + Copy,
+    E: Evaluator<Query = RpqQuery, Error = RpqError>,
     E::Result: ResultCount,
 {
     for _ in 0..args.fixed_warm_up_runs() {
@@ -204,7 +204,7 @@ pub fn run_bench_for_evaluator<E>(
     checkpointer: &mut Checkpointer,
 ) -> Result<Vec<QueryResult>, BenchError>
 where
-    E: Evaluator<Query = RpqQuery, Error = RpqError> + Copy,
+    E: Evaluator<Query = RpqQuery, Error = RpqError> + Clone,
     E::Result: ResultCount,
 {
     let mut results = Vec::with_capacity(queries.len());
@@ -244,10 +244,10 @@ where
         eprintln!("  [bench] algo={algo_name}");
 
         let bench_result = match args.bench_mode {
-            BenchMode::Fixed => run_fixed_group(args, evaluator, query, graph)
+            BenchMode::Fixed => run_fixed_group(args, evaluator.clone(), query, graph)
                 .map(|(count, timing)| Ok((Some(count), timing))),
             BenchMode::Criterion => {
-                run_benchmark_group(args, algo_name, evaluator, query, graph, idx)
+                run_benchmark_group(args, algo_name, evaluator.clone(), query, graph, idx)
                     .map(|result| result.map(|timing| (None, timing)))
             }
         };
