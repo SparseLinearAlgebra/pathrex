@@ -159,6 +159,9 @@ unsafe extern "C" {
     pub fn GrB_Matrix_dup(C: *mut GrB_Matrix, A: GrB_Matrix) -> GrB_Info;
 }
 unsafe extern "C" {
+    pub fn GrB_Matrix_nrows(nrows: *mut GrB_Index, A: GrB_Matrix) -> GrB_Info;
+}
+unsafe extern "C" {
     pub fn GrB_Matrix_nvals(nvals: *mut GrB_Index, A: GrB_Matrix) -> GrB_Info;
 }
 unsafe extern "C" {
@@ -320,6 +323,28 @@ pub struct RPQMatrixPlan {
     pub mat: GrB_Matrix,
     pub res_mat: GrB_Matrix,
 }
+#[repr(u32)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+pub enum RPQMatrixStorage {
+    RPQ_MATRIX_STORAGE_CSC = 1,
+    RPQ_MATRIX_STORAGE_CSR = 2,
+}
+unsafe extern "C" {
+    pub fn LAGraph_RPQMatrix_SetGlobalStorageOrientation(storage: RPQMatrixStorage) -> GrB_Info;
+}
+unsafe extern "C" {
+    pub fn LAGraph_RPQMatrix_SetStorageOrientation(
+        mat: GrB_Matrix,
+        storage: RPQMatrixStorage,
+    ) -> GrB_Info;
+}
+unsafe extern "C" {
+    pub fn LAGraph_RPQMatrix_DupWithStorageOrientation(
+        dst: *mut GrB_Matrix,
+        src: GrB_Matrix,
+        storage: RPQMatrixStorage,
+    ) -> GrB_Info;
+}
 unsafe extern "C" {
     pub fn LAGraph_RPQMatrix(
         nnz: *mut GrB_Index,
@@ -346,5 +371,59 @@ unsafe extern "C" {
         res: *mut GrB_Index,
         mat: GrB_Matrix,
         reduce_type: u8,
+    ) -> GrB_Info;
+}
+unsafe extern "C" {
+    pub fn LAGraph_RPQMatrix_reduce_count_vector(
+        res: *mut GrB_Vector,
+        mat: GrB_Matrix,
+        reduce_type: u8,
+    ) -> GrB_Info;
+}
+unsafe extern "C" {
+    pub fn LAGraph_RPQMatrix_extended_count_vectors(
+        row_extended: *mut GrB_Vector,
+        col_extended: *mut GrB_Vector,
+        mat: GrB_Matrix,
+        row_counts: GrB_Vector,
+        col_counts: GrB_Vector,
+    ) -> GrB_Info;
+}
+unsafe extern "C" {
+    pub fn LAGraph_RPQMatrix_count_vector_dot(
+        res: *mut f64,
+        lhs: GrB_Vector,
+        rhs: GrB_Vector,
+    ) -> GrB_Info;
+}
+unsafe extern "C" {
+    pub fn LAGraph_RPQMatrix_count_vector_mnc_matmul_nnz(
+        res: *mut f64,
+        lhs_rows: GrB_Vector,
+        lhs_cols: GrB_Vector,
+        rhs_rows: GrB_Vector,
+        rhs_cols: GrB_Vector,
+        lhs_col_extended: GrB_Vector,
+        rhs_row_extended: GrB_Vector,
+    ) -> GrB_Info;
+}
+unsafe extern "C" {
+    pub fn LAGraph_RPQMatrix_count_vector_sum(res: *mut f64, vector: GrB_Vector) -> GrB_Info;
+}
+unsafe extern "C" {
+    pub fn LAGraph_RPQMatrix_count_vector_scale(
+        res: *mut GrB_Vector,
+        vector: GrB_Vector,
+        scale: f64,
+        cap: f64,
+    ) -> GrB_Info;
+}
+unsafe extern "C" {
+    pub fn LAGraph_RPQMatrix_count_vector_mnc_add(
+        res: *mut GrB_Vector,
+        lhs: GrB_Vector,
+        rhs: GrB_Vector,
+        lambda: f64,
+        cap: f64,
     ) -> GrB_Info;
 }

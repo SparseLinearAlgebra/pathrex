@@ -11,8 +11,8 @@ use crate::{
 };
 
 use super::{
-    Backend, Edge, GraphBuilder, GraphDecomposition, GraphError, LagraphGraph, ThreadScope,
-    compute_outer_inner, load_mm_file,
+    Backend, Edge, GraphBuilder, GraphDecomposition, GraphError, LagraphGraph, MatrixStorage,
+    ThreadScope, compute_outer_inner, load_mm_file,
 };
 
 /// Marker type for the in-memory GraphBLAS-backed backend.
@@ -42,6 +42,8 @@ pub struct InMemoryBuilder {
     next_id: usize,
     label_buffers: HashMap<String, Vec<(usize, usize)>>,
     prebuilt: HashMap<String, LagraphGraph>,
+    prebuilt_csc: HashMap<String, LagraphGraph>,
+    metadata: HashMap<String, MatrixMetadata>,
 }
 
 impl InMemoryBuilder {
@@ -52,6 +54,8 @@ impl InMemoryBuilder {
             next_id: 0,
             label_buffers: HashMap::new(),
             prebuilt: HashMap::new(),
+            prebuilt_csc: HashMap::new(),
+            metadata: HashMap::new(),
         }
     }
 
@@ -111,6 +115,22 @@ impl InMemoryBuilder {
     ) {
         self.prebuilt.extend(iter);
     }
+
+    /// Bulk-install pre-wrapped CSC `(label, LagraphGraph)` pairs.
+    pub(crate) fn extend_prebuilt_csc<I: IntoIterator<Item = (String, LagraphGraph)>>(
+        &mut self,
+        iter: I,
+    ) {
+        self.prebuilt_csc.extend(iter);
+    }
+
+    /// Bulk-install pre-wrapped `(label, MatrixMetadata)` pairs into `metadata`.
+    pub(crate) fn extend_metadata<I: IntoIterator<Item = (String, MatrixMetadata)>>(
+        &mut self,
+        iter: I,
+    ) {
+        self.metadata.extend(iter);
+    }
 }
 
 impl GraphBuilder for InMemoryBuilder {
@@ -128,9 +148,14 @@ impl GraphBuilder for InMemoryBuilder {
 
         let mut graphs: HashMap<String, Arc<LagraphGraph>> =
             HashMap::with_capacity(self.label_buffers.len() + self.prebuilt.len());
+        let mut graphs_csc: HashMap<String, Arc<LagraphGraph>> =
+            HashMap::with_capacity(self.prebuilt_csc.len());
 
         for (label, lg) in self.prebuilt {
             graphs.insert(label, Arc::new(lg));
+        }
+        for (label, lg) in self.prebuilt_csc {
+            graphs_csc.insert(label, Arc::new(lg));
         }
 
         let label_buffers: Vec<(String, Vec<(usize, usize)>)> =
@@ -162,11 +187,14 @@ impl GraphBuilder for InMemoryBuilder {
         for (label, lg) in built {
             graphs.insert(label, Arc::new(lg));
         }
-
         Ok(InMemoryGraph {
             node_to_id: self.node_to_id,
             id_to_node: self.id_to_node,
             graphs,
+            graphs_csc,
+            metadata: GraphMetadata {
+                label_to_data: self.metadata,
+            },
         })
     }
 }
@@ -176,6 +204,24 @@ pub struct InMemoryGraph {
     node_to_id: HashMap<String, usize>,
     id_to_node: HashMap<usize, String>,
     graphs: HashMap<String, Arc<LagraphGraph>>,
+    graphs_csc: HashMap<String, Arc<LagraphGraph>>,
+    metadata: GraphMetadata,
+}
+pub struct GraphMetadata {
+    label_to_data: HashMap<String, MatrixMetadata>,
+}
+
+impl GraphMetadata {
+    pub fn matrix(&self, label: &str) -> Option<&MatrixMetadata> {
+        self.label_to_data.get(label)
+    }
+}
+
+pub struct MatrixMetadata {
+    pub dimension: usize,
+    pub nonzero_rows: usize,
+    pub nonzero_cols: usize,
+    pub nvals: usize,
 }
 
 impl GraphDecomposition for InMemoryGraph {
@@ -184,6 +230,19 @@ impl GraphDecomposition for InMemoryGraph {
             .get(label)
             .cloned()
             .ok_or_else(|| GraphError::LabelNotFound(label.to_owned()))
+    }
+
+    fn get_graph_with_storage(
+        &self,
+        label: &str,
+        storage: MatrixStorage,
+    ) -> Result<Arc<LagraphGraph>, GraphError> {
+        if storage == MatrixStorage::Csc {
+            if let Some(graph) = self.graphs_csc.get(label) {
+                return Ok(Arc::clone(graph));
+            }
+        }
+        self.get_graph(label)
     }
 
     fn get_node_id(&self, string_id: &str) -> Option<usize> {
@@ -197,12 +256,19 @@ impl GraphDecomposition for InMemoryGraph {
     fn num_nodes(&self) -> usize {
         self.id_to_node.len()
     }
+
+    fn get_metadata(&self) -> Option<&GraphMetadata> {
+        Some(&self.metadata)
+    }
 }
 
 impl InMemoryGraph {
     /// Returns the number of distinct edge labels in the graph.
     pub fn num_labels(&self) -> usize {
         self.graphs.len()
+    }
+    pub fn metadata(&self, label: &str) -> Option<&MatrixMetadata> {
+        self.metadata.label_to_data.get(label)
     }
 }
 
@@ -244,22 +310,52 @@ impl GraphSource<InMemoryBuilder> for MatrixMarket {
         let _scope = ThreadScope::enter(outer, inner)?;
 
         let mm_dir = self.dir.clone();
-        let loaded: Vec<(String, LagraphGraph)> = edge_by_idx
-            .into_par_iter()
-            .map(
-                |(idx, label)| -> Result<(String, LagraphGraph), GraphError> {
-                    let path = mm_dir.join(format!("{}.txt", idx));
-                    let matrix = load_mm_file(&path)?;
-                    let lg = LagraphGraph::from_matrix(
-                        matrix,
-                        LAGraph_Kind::LAGraph_ADJACENCY_DIRECTED,
-                    )?;
-                    Ok((label, lg))
-                },
-            )
-            .collect::<Result<Vec<_>, GraphError>>()?;
+        let loaded: Vec<(String, LagraphGraph, LagraphGraph, MatrixMetadata)> =
+            edge_by_idx
+                .into_par_iter()
+                .map(
+                    |(idx, label)| -> Result<
+                        (String, LagraphGraph, LagraphGraph, MatrixMetadata),
+                        GraphError,
+                    > {
+                        let path = mm_dir.join(format!("{}.txt", idx));
+                        let matrix = load_mm_file(&path)?;
+                        matrix.set_storage_orientation(MatrixStorage::Csr)?;
+                        let csc_matrix = matrix.dup_with_storage_orientation(MatrixStorage::Csc)?;
+                        let lg = LagraphGraph::from_matrix(
+                            matrix,
+                            LAGraph_Kind::LAGraph_ADJACENCY_DIRECTED,
+                        )?;
+                        let lg_csc = LagraphGraph::from_matrix(
+                            csc_matrix,
+                            LAGraph_Kind::LAGraph_ADJACENCY_DIRECTED,
+                        )?;
+                        let dimension = lg.dimension()?;
+                        let nonzero_rows = lg.nonzero_rows()?;
+                        let nonzero_cols = lg.nonzero_cols()?;
+                        let nvals = lg.nvals()?;
+                        let metadata = MatrixMetadata {
+                            dimension: dimension as usize,
+                            nonzero_rows: nonzero_rows,
+                            nonzero_cols: nonzero_cols,
+                            nvals: nvals as usize,
+                        };
+                        Ok((label, lg, lg_csc, metadata))
+                    },
+                )
+                .collect::<Result<Vec<_>, GraphError>>()?;
 
-        builder.extend_prebuilt(loaded);
+        let mut loaded_graphs = vec![];
+        let mut loaded_graphs_csc = vec![];
+        let mut loaded_metadata = vec![];
+        for (_i, (name, graph, graph_csc, meta)) in loaded.into_iter().enumerate() {
+            loaded_graphs.push((name.clone(), graph));
+            loaded_graphs_csc.push((name.clone(), graph_csc));
+            loaded_metadata.push((name, meta));
+        }
+        builder.extend_prebuilt(loaded_graphs);
+        builder.extend_prebuilt_csc(loaded_graphs_csc);
+        builder.extend_metadata(loaded_metadata);
 
         Ok(builder)
     }
