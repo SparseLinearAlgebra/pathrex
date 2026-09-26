@@ -97,6 +97,8 @@ Subcommands:
 | `-q`, `--queries <FILE>` | Queries file (see format below). |
 | `-a`, `--algo <nfarpq\|rpqmatrix>` | Algorithm(s). Repeat to run several. |
 | `-b`, `--base-iri [<IRI>]` | Optional `BASE <iri>` to prepend to each query. Bare `--base-iri` uses `http://example.org/`. |
+| `-p`, `--rpqmatrix-optimizer <NAME>` | RPQMatrix optimizer: `none`, `join`, `metaac`, `mnc`, or `hybrid`. |
+
 
 `query` adds `-o, --output <FILE>` to write JSON.
 
