@@ -20,7 +20,7 @@ pub fn run_query_for_evaluator<E>(
     queries: &[LoadedQuery],
 ) -> Vec<QueryResult>
 where
-    E: Evaluator<Query = RpqQuery, Error = RpqError> + Copy,
+    E: Evaluator<Query = RpqQuery, Error = RpqError>,
     E::Result: ResultCount,
 {
     let mut results = Vec::with_capacity(queries.len());

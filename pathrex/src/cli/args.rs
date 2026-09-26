@@ -241,8 +241,15 @@ impl std::fmt::Display for GraphFormat {
 #[value(rename_all = "lowercase")]
 #[serde(rename_all = "lowercase")]
 pub enum RpqMatrixOptimizer {
-    /// Optimizer based on cardinality of source matrices.
-    Cardinality,
+    /// Optimizer based on join of source matrices.
+    Join,
+    /// MetaAC independence estimator.
+    #[value(name = "metaac")]
+    MetaAc,
+    /// Matrix nonzero count estimator.
+    Mnc,
+    /// Join work model with MetaAC result estimates.
+    Hybrid,
     /// Without any optimizations.
     None,
 }
@@ -256,7 +263,10 @@ impl Default for RpqMatrixOptimizer {
 impl std::fmt::Display for RpqMatrixOptimizer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RpqMatrixOptimizer::Cardinality => write!(f, "cardinality"),
+            RpqMatrixOptimizer::Join => write!(f, "join"),
+            RpqMatrixOptimizer::MetaAc => write!(f, "metaac"),
+            RpqMatrixOptimizer::Mnc => write!(f, "mnc"),
+            RpqMatrixOptimizer::Hybrid => write!(f, "hybrid"),
             RpqMatrixOptimizer::None => write!(f, "none"),
         }
     }
@@ -266,7 +276,10 @@ impl From<RpqMatrixOptimizer> for OptimizationStrategy {
     fn from(value: RpqMatrixOptimizer) -> Self {
         match value {
             RpqMatrixOptimizer::None => OptimizationStrategy::NoOpt,
-            RpqMatrixOptimizer::Cardinality => OptimizationStrategy::Cardinality,
+            RpqMatrixOptimizer::Join => OptimizationStrategy::Join,
+            RpqMatrixOptimizer::MetaAc => OptimizationStrategy::MetaAc,
+            RpqMatrixOptimizer::Mnc => OptimizationStrategy::Mnc,
+            RpqMatrixOptimizer::Hybrid => OptimizationStrategy::Hybrid,
         }
     }
 }

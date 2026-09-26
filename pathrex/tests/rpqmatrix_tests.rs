@@ -7,7 +7,7 @@ use pathrex::eval::ResultCount;
 use pathrex::formats::mm::MatrixMarket;
 use pathrex::graph::{Graph, GraphDecomposition, GraphError, InMemory, InMemoryGraph};
 use pathrex::lagraph_sys::{GrB_Index, GrB_Info, GrB_Matrix_extractElement_BOOL};
-use pathrex::rpq::rpqmatrix::OptimizationStrategy::Cardinality;
+use pathrex::rpq::rpqmatrix::OptimizationStrategy::{Hybrid, Join, MetaAc, Mnc};
 use pathrex::rpq::rpqmatrix::eval::RpqMatrixEvaluator;
 use pathrex::rpq::rpqmatrix::result::RpqMatrixResult;
 use pathrex::rpq::{Endpoint, PathExpr, PreparedRpq, RpqError, RpqEvaluator, RpqQuery};
@@ -101,8 +101,8 @@ fn run_la_n_egg_case(case_name: &str) {
     run_la_n_egg_case_with_evaluator(case_name, RpqMatrixEvaluator::default());
 }
 
-fn run_la_n_egg_case_cardinality(case_name: &str) {
-    run_la_n_egg_case_with_evaluator(case_name, RpqMatrixEvaluator::optimized(Cardinality));
+fn run_la_n_egg_case_join(case_name: &str) {
+    run_la_n_egg_case_with_evaluator(case_name, RpqMatrixEvaluator::optimized(Join));
 }
 
 fn label(s: &str) -> PathExpr {
@@ -134,16 +134,16 @@ fn matrix_entry_set(result: &RpqMatrixResult, row: GrB_Index, col: GrB_Index) ->
 }
 
 // TODO: made it reusable for different optimizers
-fn evaluate_default_and_cardinality(
+fn evaluate_default_and_join(
     graph: &InMemoryGraph,
     query: &RpqQuery,
 ) -> (RpqMatrixResult, RpqMatrixResult) {
     let default_result = RpqMatrixEvaluator::default()
         .evaluate(query, graph)
         .expect("default evaluator should succeed");
-    let optimized_result = RpqMatrixEvaluator::optimized(Cardinality)
+    let optimized_result = RpqMatrixEvaluator::optimized(Join)
         .evaluate(query, graph)
-        .expect("cardinality optimizer should succeed");
+        .expect("join optimizer should succeed");
 
     assert_eq!(
         default_result.nnz, optimized_result.nnz,
@@ -537,17 +537,27 @@ fn test_la_n_egg_con_any() {
 }
 
 #[test]
-fn test_la_n_egg_any_any_cardinality_optimizer() {
-    run_la_n_egg_case_cardinality("any-any");
+fn test_la_n_egg_any_any_join_optimizer() {
+    run_la_n_egg_case_join("any-any");
 }
 
 #[test]
-fn test_la_n_egg_any_con_cardinality_optimizer() {
-    run_la_n_egg_case_cardinality("con-any");
+fn test_la_n_egg_any_con_join_optimizer() {
+    run_la_n_egg_case_join("con-any");
 }
 
 #[test]
-fn test_cardinality_optimizer_give_same_result_unoptimized_way_1() {
+fn test_la_n_egg_cases_with_core_optimizers() {
+    for optimizer in [MetaAc, Mnc, Hybrid] {
+        let evaluator = RpqMatrixEvaluator::optimized(optimizer);
+        for case in ["any-any", "any-con", "con-any"] {
+            run_la_n_egg_case_with_evaluator(case, evaluator.clone());
+        }
+    }
+}
+
+#[test]
+fn test_join_optimizer_give_same_result_unoptimized_way_1() {
     let graph = build_graph(&[
         ("A", "B", "knows"),
         ("B", "C", "knows"),
@@ -562,7 +572,7 @@ fn test_cardinality_optimizer_give_same_result_unoptimized_way_1() {
     );
     let query = rq(named_ep("A"), path, var("y"));
 
-    let (default_result, optimized_result) = evaluate_default_and_cardinality(&graph, &query);
+    let (default_result, optimized_result) = evaluate_default_and_join(&graph, &query);
     assert_eq!(default_result.nnz, 2);
 
     let a_id = graph.get_node_id("A").expect("A should exist") as GrB_Index;
@@ -582,7 +592,7 @@ fn test_cardinality_optimizer_give_same_result_unoptimized_way_1() {
 }
 
 #[test]
-fn test_cardinality_optimizer_give_same_result_unoptimized_way_2() {
+fn test_join_optimizer_give_same_result_unoptimized_way_2() {
     let graph = build_graph(&[
         ("A", "B", "knows"),
         ("B", "C", "likes"),
@@ -599,7 +609,7 @@ fn test_cardinality_optimizer_give_same_result_unoptimized_way_2() {
     );
 
     let query = rq(named_ep("A"), path, var("y"));
-    let (default_result, optimized_result) = evaluate_default_and_cardinality(&graph, &query);
+    let (default_result, optimized_result) = evaluate_default_and_join(&graph, &query);
 
     assert_eq!(default_result.nnz, 1);
     let a_id = graph.get_node_id("A").expect("A should exist") as GrB_Index;
@@ -615,7 +625,7 @@ fn test_cardinality_optimizer_give_same_result_unoptimized_way_2() {
 }
 
 #[test]
-fn test_cardinality_optimizer_give_same_result_unoptimized_way_3() {
+fn test_join_optimizer_give_same_result_unoptimized_way_3() {
     let graph = build_graph(&[
         ("A", "B", "knows"),
         ("B", "C", "likes"),
@@ -632,7 +642,7 @@ fn test_cardinality_optimizer_give_same_result_unoptimized_way_3() {
     );
     let query = rq(named_ep("A"), path, var("y"));
 
-    let (default_result, optimized_result) = evaluate_default_and_cardinality(&graph, &query);
+    let (default_result, optimized_result) = evaluate_default_and_join(&graph, &query);
     assert_eq!(default_result.nnz, 2);
 
     let a_id = graph.get_node_id("A").expect("A should exist") as GrB_Index;
