@@ -373,3 +373,57 @@ unsafe extern "C" {
         reduce_type: u8,
     ) -> GrB_Info;
 }
+unsafe extern "C" {
+    pub fn LAGraph_RPQMatrix_reduce_count_vector(
+        res: *mut GrB_Vector,
+        mat: GrB_Matrix,
+        reduce_type: u8,
+    ) -> GrB_Info;
+}
+unsafe extern "C" {
+    pub fn LAGraph_RPQMatrix_extended_count_vectors(
+        row_extended: *mut GrB_Vector,
+        col_extended: *mut GrB_Vector,
+        mat: GrB_Matrix,
+        row_counts: GrB_Vector,
+        col_counts: GrB_Vector,
+    ) -> GrB_Info;
+}
+unsafe extern "C" {
+    pub fn LAGraph_RPQMatrix_count_vector_dot(
+        res: *mut f64,
+        lhs: GrB_Vector,
+        rhs: GrB_Vector,
+    ) -> GrB_Info;
+}
+unsafe extern "C" {
+    pub fn LAGraph_RPQMatrix_count_vector_mnc_matmul_nnz(
+        res: *mut f64,
+        lhs_rows: GrB_Vector,
+        lhs_cols: GrB_Vector,
+        rhs_rows: GrB_Vector,
+        rhs_cols: GrB_Vector,
+        lhs_col_extended: GrB_Vector,
+        rhs_row_extended: GrB_Vector,
+    ) -> GrB_Info;
+}
+unsafe extern "C" {
+    pub fn LAGraph_RPQMatrix_count_vector_sum(res: *mut f64, vector: GrB_Vector) -> GrB_Info;
+}
+unsafe extern "C" {
+    pub fn LAGraph_RPQMatrix_count_vector_scale(
+        res: *mut GrB_Vector,
+        vector: GrB_Vector,
+        scale: f64,
+        cap: f64,
+    ) -> GrB_Info;
+}
+unsafe extern "C" {
+    pub fn LAGraph_RPQMatrix_count_vector_mnc_add(
+        res: *mut GrB_Vector,
+        lhs: GrB_Vector,
+        rhs: GrB_Vector,
+        lambda: f64,
+        cap: f64,
+    ) -> GrB_Info;
+}
