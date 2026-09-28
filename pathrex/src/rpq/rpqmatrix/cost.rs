@@ -82,9 +82,7 @@ impl CostFunction<RpqPlan> for JoinCostFn {
                 let denom = ca.nnz_r.max(cb.nnz_c).max(1.0);
                 let op_cost = (ca.nnz * cb.nnz) / denom;
                 let score = ca.score + cb.score + op_cost;
-
-                // TODO: this can exceed `n^2` when child estimates are already loose.
-                let nnz_est = ca.nnz * cb.nnz / (self.n * self.n);
+                let nnz_est = ca.nnz * cb.nnz / self.n ;
 
                 JoinCost {
                     score,
