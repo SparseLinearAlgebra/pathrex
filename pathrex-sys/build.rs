@@ -362,6 +362,7 @@ fn regenerate_bindings(graphblas_install: &Path) {
         .allowlist_function("LAGraph_RPQMatrix_SetStorageOrientation")
         .allowlist_function("LAGraph_RPQMatrix_DupWithStorageOrientation")
         .allowlist_function("LAGraph_RPQMatrix_reduce")
+        .allowlist_function("LAGraph_RPQMatrix_sample_.*")
         .allowlist_function("LAGraph_RPQMatrix_reduce_count_vector")
         .allowlist_function("LAGraph_RPQMatrix_extended_count_vectors")
         .allowlist_function("LAGraph_RPQMatrix_count_vector_.*")
