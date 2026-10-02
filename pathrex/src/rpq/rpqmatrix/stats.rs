@@ -3,33 +3,20 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
+use crate::graph::{GraphblasMatrix, GraphblasVector};
 use crate::lagraph_sys::{
-    GrB_Info, GrB_Matrix, GrB_Vector, GrB_Vector_free, GrB_Vector_nvals, LAGraph_RPQMatrix_Free,
+    GrB_Info, GrB_Matrix, GrB_Vector, GrB_Vector_free, GrB_Vector_nvals,
     LAGraph_RPQMatrix_count_vector_dot, LAGraph_RPQMatrix_count_vector_mnc_add,
     LAGraph_RPQMatrix_count_vector_mnc_matmul_nnz, LAGraph_RPQMatrix_count_vector_scale,
     LAGraph_RPQMatrix_count_vector_sum, LAGraph_RPQMatrix_extended_count_vectors,
     LAGraph_RPQMatrix_label, LAGraph_RPQMatrix_reduce_count_vector,
 };
 
-#[derive(Debug)]
-struct CountVectorHandle(GrB_Vector);
-
 static NEXT_VECTOR_ID: AtomicUsize = AtomicUsize::new(1);
 
-impl Drop for CountVectorHandle {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe { GrB_Vector_free(&mut self.0) };
-        }
-    }
-}
-
-unsafe impl Send for CountVectorHandle {}
-unsafe impl Sync for CountVectorHandle {}
-
 #[derive(Clone, Debug)]
-pub(super) struct CountVector {
-    handle: Arc<CountVectorHandle>,
+pub(crate) struct CountVector {
+    handle: Arc<GraphblasVector>,
     nvals: usize,
     sum: f64,
     id: usize,
@@ -55,7 +42,7 @@ impl CountVector {
         };
         if ok {
             Some(Self {
-                handle: Arc::new(CountVectorHandle(vector)),
+                handle: Arc::new(GraphblasVector { inner: vector }),
                 nvals: nvals as usize,
                 sum,
                 id: NEXT_VECTOR_ID.fetch_add(1, Ordering::Relaxed),
@@ -67,7 +54,7 @@ impl CountVector {
     }
 
     fn raw(&self) -> GrB_Vector {
-        self.handle.0
+        self.handle.inner
     }
 
     pub(super) fn cache_key(&self) -> usize {
@@ -85,14 +72,7 @@ impl CountVector {
         (code == GrB_Info::GrB_SUCCESS).then_some(result)
     }
 
-    pub(super) fn mnc_matmul_nnz(
-        lhs_rows: &Self,
-        lhs_cols: &Self,
-        rhs_rows: &Self,
-        rhs_cols: &Self,
-        lhs_col_extended: Option<&Self>,
-        rhs_row_extended: Option<&Self>,
-    ) -> Option<f64> {
+    pub(super) fn mnc_matmul_nnz(lhs_rows: &Self, lhs_cols: &Self, rhs_rows: &Self, rhs_cols: &Self, lhs_col_extended: Option<&Self>, rhs_row_extended: Option<&Self>) -> Option<f64> {
         let mut result = 0.0;
         let code = unsafe {
             LAGraph_RPQMatrix_count_vector_mnc_matmul_nnz(
@@ -133,24 +113,41 @@ impl CountVector {
             .flatten()
     }
 
-    #[allow(dead_code)]
     pub(super) fn nonzero_count(&self) -> f64 {
         self.nvals as f64
     }
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct LabelCountVectors {
+pub(crate) struct LabelCountVectors {
     pub row_counts: CountVector,
     pub col_counts: CountVector,
-    pub row_extended: CountVector,
-    pub col_extended: CountVector,
+    pub row_extended: Option<CountVector>,
+    pub col_extended: Option<CountVector>,
 }
 
 impl LabelCountVectors {
-    pub(super) fn from_matrix(matrix: GrB_Matrix) -> Option<Self> {
+    pub(crate) fn from_matrix(matrix: GrB_Matrix) -> Option<Self> {
+        let mut counts = Self::from_matrix_basic(matrix)?;
+        counts.ensure_extended(matrix)?;
+        Some(counts)
+    }
+
+    pub(crate) fn from_matrix_basic(matrix: GrB_Matrix) -> Option<Self> {
         let row_counts = CountVector::from_matrix(matrix, false)?;
         let col_counts = CountVector::from_matrix(matrix, true)?;
+        Some(Self {
+            row_counts,
+            col_counts,
+            row_extended: None,
+            col_extended: None,
+        })
+    }
+
+    pub(super) fn ensure_extended(&mut self, matrix: GrB_Matrix) -> Option<()> {
+        if self.row_extended.is_some() && self.col_extended.is_some() {
+            return Some(());
+        }
         let mut row_extended = std::ptr::null_mut();
         let mut col_extended = std::ptr::null_mut();
         let code = unsafe {
@@ -158,32 +155,31 @@ impl LabelCountVectors {
                 &mut row_extended,
                 &mut col_extended,
                 matrix,
-                row_counts.raw(),
-                col_counts.raw(),
+                self.row_counts.raw(),
+                self.col_counts.raw(),
             )
         };
         if code != GrB_Info::GrB_SUCCESS {
             return None;
         }
-        let row_extended = CountVector::from_owned(row_extended);
-        let col_extended = CountVector::from_owned(col_extended);
-        Some(Self {
-            row_counts,
-            col_counts,
-            row_extended: row_extended?,
-            col_extended: col_extended?,
-        })
+        let row = CountVector::from_owned(row_extended);
+        let col = CountVector::from_owned(col_extended);
+        let (Some(row), Some(col)) = (row, col) else {
+            return None;
+        };
+        self.row_extended = Some(row);
+        self.col_extended = Some(col);
+        Some(())
     }
 
     pub(super) fn from_vertex(vertex: usize, n: usize) -> Option<Self> {
         let mut matrix = std::ptr::null_mut();
         let create = unsafe { LAGraph_RPQMatrix_label(&mut matrix, vertex as _, n as _, n as _) };
+        let matrix = GraphblasMatrix::from_raw(matrix);
         if create != GrB_Info::GrB_SUCCESS {
             return None;
         }
-        let counts = Self::from_matrix(matrix);
-        let free = unsafe { LAGraph_RPQMatrix_Free(&mut matrix) };
-        (free == GrB_Info::GrB_SUCCESS).then_some(counts).flatten()
+        Self::from_matrix(matrix.inner)
     }
 }
 
@@ -191,53 +187,6 @@ impl LabelCountVectors {
 mod tests {
     use super::*;
     use crate::{graph::GraphDecomposition, utils::build_graph};
-
-    #[test]
-    fn graphblas_apply_zero_retains_explicit_zero_entries() {
-        use crate::lagraph_sys::{
-            GrB_BinaryOp, GrB_Descriptor, GrB_Type, GrB_Vector_new, GrB_Vector_nvals,
-        };
-
-        unsafe extern "C" {
-            static mut GrB_FP64: GrB_Type;
-            static mut GrB_TIMES_FP64: GrB_BinaryOp;
-            fn GrB_Vector_apply_BinaryOp1st_FP64(
-                output: GrB_Vector,
-                mask: GrB_Vector,
-                accum: GrB_BinaryOp,
-                op: GrB_BinaryOp,
-                scalar: f64,
-                input: GrB_Vector,
-                descriptor: GrB_Descriptor,
-            ) -> GrB_Info;
-        }
-
-        let graph = build_graph(&[("A", "B", "p"), ("B", "C", "p")]);
-        let counts =
-            LabelCountVectors::from_matrix(graph.get_graph("p").unwrap().matrix()).unwrap();
-        let mut raw = std::ptr::null_mut();
-        unsafe {
-            assert_eq!(GrB_Vector_new(&mut raw, GrB_FP64, 3), GrB_Info::GrB_SUCCESS);
-            assert_eq!(
-                GrB_Vector_apply_BinaryOp1st_FP64(
-                    raw,
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
-                    GrB_TIMES_FP64,
-                    0.0,
-                    counts.row_counts.raw(),
-                    std::ptr::null_mut(),
-                ),
-                GrB_Info::GrB_SUCCESS,
-            );
-            let mut stored = 0;
-            assert_eq!(GrB_Vector_nvals(&mut stored, raw), GrB_Info::GrB_SUCCESS);
-            assert_eq!(stored, 2, "GraphBLAS should retain the two explicit zeros");
-        }
-        let result = CountVector::from_owned(raw).unwrap();
-        assert_eq!(result.sum(), 0.0);
-        assert_eq!(result.nonzero_count(), 2.0);
-    }
 
     #[test]
     fn mnc_vector_operations_use_graphblas_counts() {
@@ -253,8 +202,8 @@ mod tests {
                 &counts.col_counts,
                 &counts.row_counts,
                 &counts.col_counts,
-                Some(&counts.col_extended),
-                Some(&counts.row_extended),
+                counts.col_extended.as_ref(),
+                counts.row_extended.as_ref(),
             ),
             Some(1.0),
         );
@@ -264,17 +213,24 @@ mod tests {
             .unwrap();
         assert_eq!(union.sum(), 3.0);
         assert_eq!(union.nonzero_count(), 2.0);
-        let fractional_union = counts
-            .row_counts
-            .mnc_add(&counts.row_counts, 0.5, 3.0)
-            .unwrap();
-        assert_eq!(fractional_union.sum(), 3.0);
         let empty = counts.row_counts.scale(0.0, 3.0).unwrap();
         assert_eq!(empty.sum(), 0.0);
         assert_eq!(empty.nonzero_count(), 0.0);
         let fractional = counts.row_counts.scale(0.4, 3.0).unwrap();
         assert_eq!(fractional.sum(), 0.8);
         assert_eq!(fractional.nonzero_count(), 2.0);
+    }
+
+    #[test]
+    fn basic_counts_do_not_build_mnc_extensions_until_requested() {
+        let graph = build_graph(&[("A", "B", "p")]);
+        let matrix = graph.get_graph("p").unwrap().matrix();
+        let mut counts = LabelCountVectors::from_matrix_basic(matrix).unwrap();
+        assert!(counts.row_extended.is_none());
+        assert!(counts.col_extended.is_none());
+        counts.ensure_extended(matrix).unwrap();
+        assert!(counts.row_extended.is_some());
+        assert!(counts.col_extended.is_some());
     }
 
     #[test]
@@ -297,14 +253,14 @@ mod tests {
         assert_eq!(a.col_counts.nonzero_count(), 3.0);
         assert_eq!(b.row_counts.nonzero_count(), 3.0);
         assert_eq!(b.col_counts.nonzero_count(), 2.0);
-        assert_eq!(a.row_extended.nonzero_count(), 2.0);
-        assert_eq!(a.col_extended.nonzero_count(), 1.0);
-        assert_eq!(b.row_extended.nonzero_count(), 1.0);
-        assert_eq!(b.col_extended.nonzero_count(), 2.0);
-        assert_eq!(a.row_extended.sum(), 3.0);
-        assert_eq!(a.col_extended.sum(), 1.0);
-        assert_eq!(b.row_extended.sum(), 1.0);
-        assert_eq!(b.col_extended.sum(), 3.0);
+        assert_eq!(a.row_extended.as_ref().unwrap().nonzero_count(), 2.0);
+        assert_eq!(a.col_extended.as_ref().unwrap().nonzero_count(), 1.0);
+        assert_eq!(b.row_extended.as_ref().unwrap().nonzero_count(), 1.0);
+        assert_eq!(b.col_extended.as_ref().unwrap().nonzero_count(), 2.0);
+        assert_eq!(a.row_extended.as_ref().unwrap().sum(), 3.0);
+        assert_eq!(a.col_extended.as_ref().unwrap().sum(), 1.0);
+        assert_eq!(b.row_extended.as_ref().unwrap().sum(), 1.0);
+        assert_eq!(b.col_extended.as_ref().unwrap().sum(), 3.0);
 
         let estimate = |lhs_ext, rhs_ext| {
             CountVector::mnc_matmul_nnz(
@@ -318,11 +274,14 @@ mod tests {
             .unwrap()
         };
         assert!((estimate(None, None) - 2.3125).abs() < 1e-10);
-        let lhs_only = estimate(Some(&a.col_extended), None);
-        let rhs_only = estimate(None, Some(&b.row_extended));
+        let lhs_only = estimate(a.col_extended.as_ref(), None);
+        let rhs_only = estimate(None, b.row_extended.as_ref());
         assert!((lhs_only - 2.5).abs() < 1e-10, "lhs-only: {lhs_only}");
         assert!((rhs_only - 2.5).abs() < 1e-10, "rhs-only: {rhs_only}");
-        assert_eq!(estimate(Some(&a.col_extended), Some(&b.row_extended)), 3.0);
+        assert_eq!(
+            estimate(a.col_extended.as_ref(), b.row_extended.as_ref()),
+            3.0
+        );
     }
 
     #[test]

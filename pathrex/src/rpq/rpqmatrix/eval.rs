@@ -1,7 +1,7 @@
 use super::expr::{materialize_with_storage, query_to_expr};
 use super::optimize::{
     OptimizationStrategy, OptimizerCache, optimize_expr_hybrid, optimize_expr_join,
-    optimize_expr_metaac, optimize_expr_mnc,
+    optimize_expr_metaac, optimize_expr_mnc, optimize_expr_pang_hybrid, optimize_expr_sampling,
 };
 use super::result::{PreparedRpqMatrix, RpqMatrixResult};
 /// RPQ evaluator backed by `LAGraph_RPQMatrix`.
@@ -18,16 +18,16 @@ pub struct RpqMatrixEvaluator {
 
 impl RpqMatrixEvaluator {
     pub fn unoptimized() -> Self {
-        return RpqMatrixEvaluator {
+        RpqMatrixEvaluator {
             optimizer: OptimizationStrategy::NoOpt,
             cache: Arc::default(),
-        };
+        }
     }
     pub fn optimized(opt: OptimizationStrategy) -> Self {
-        return RpqMatrixEvaluator {
+        RpqMatrixEvaluator {
             optimizer: opt,
             cache: Arc::default(),
-        };
+        }
     }
 }
 
@@ -67,9 +67,15 @@ impl Evaluator for RpqMatrixEvaluator {
             OptimizationStrategy::MetaAc => expr = optimize_expr_metaac(expr, graph.num_nodes()),
             OptimizationStrategy::Mnc => expr = optimize_expr_mnc(expr, graph, &self.cache)?,
             OptimizationStrategy::Hybrid => expr = optimize_expr_hybrid(expr, graph.num_nodes()),
+            OptimizationStrategy::PangHybrid => {
+                expr = optimize_expr_pang_hybrid(expr, graph.num_nodes())
+            }
+            OptimizationStrategy::Sampling => expr = optimize_expr_sampling(expr, graph)?,
             OptimizationStrategy::RandomOpt
             | OptimizationStrategy::Simple
-            | OptimizationStrategy::Wander => todo!(),
+            | OptimizationStrategy::Wander => {
+                return Err(RpqError::UnsupportedPath(format!("optimizer {:?} is not implemented", self.optimizer)));
+            }
         }
 
         let (plans, owned_matrices) = materialize_with_storage(&expr, graph, storage)?;
@@ -85,8 +91,38 @@ impl Evaluator for RpqMatrixEvaluator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::formats::MatrixMarket;
+    use crate::graph::{Graph, InMemory, MatrixStatsMode};
     use crate::rpq::{Endpoint, PathExpr, RpqQuery};
     use crate::utils::build_graph;
+
+    #[test]
+    fn optimizer_specific_matrix_statistics_preserve_results() {
+        let query = RpqQuery {
+            subject: Endpoint::Variable("x".into()),
+            path: PathExpr::ZeroOrMore(Box::new(PathExpr::Label("knows".into()))),
+            object: Endpoint::Variable("y".into()),
+        };
+        for (mode, optimizer) in [
+            (MatrixStatsMode::None, OptimizationStrategy::PangHybrid),
+            (MatrixStatsMode::None, OptimizationStrategy::Sampling),
+            (MatrixStatsMode::Extended, OptimizationStrategy::Mnc),
+        ] {
+            let graph = Graph::<InMemory>::try_from(
+                MatrixMarket::from_dir("tests/testdata/mm_small").with_matrix_stats(mode),
+            )
+            .unwrap();
+            let expected = RpqMatrixEvaluator::unoptimized()
+                .evaluate(&query, &graph)
+                .unwrap()
+                .nnz;
+            let actual = RpqMatrixEvaluator::optimized(optimizer)
+                .evaluate(&query, &graph)
+                .unwrap()
+                .nnz;
+            assert_eq!(actual, expected, "{optimizer:?}");
+        }
+    }
 
     #[test]
     fn evaluate_single_edge_nnz() {
@@ -160,6 +196,8 @@ mod tests {
             OptimizationStrategy::MetaAc,
             OptimizationStrategy::Mnc,
             OptimizationStrategy::Hybrid,
+            OptimizationStrategy::PangHybrid,
+            OptimizationStrategy::Sampling,
         ] {
             let evaluator = RpqMatrixEvaluator::optimized(optimizer);
             for (query, expected) in &queries {

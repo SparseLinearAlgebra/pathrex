@@ -18,14 +18,13 @@ fn label_meta<G: GraphDecomposition>(label: &str, graph: &G) -> Result<LabelMeta
         });
     }
 
-    // TODO: maybe create optimized (for mm format) and nonoptimized (for other formats) plans
     let lg = graph.get_graph(label)?;
     let nvals = lg.nvals()? as usize;
     Ok(LabelMeta {
         name: label.to_owned(),
         nvals,
-        nonzero_rows: nvals,
-        nonzero_cols: nvals,
+        nonzero_rows: lg.nonzero_rows()?,
+        nonzero_cols: lg.nonzero_cols()?,
     })
 }
 
@@ -199,4 +198,19 @@ pub fn materialize_with_storage<G: GraphDecomposition>(
     }
 
     Ok((plans, owned_matrices))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::build_graph;
+
+    #[test]
+    fn labels_without_metadata_use_actual_nonempty_rows_and_columns() {
+        let graph = build_graph(&[("a", "b", "p"), ("a", "c", "p"), ("d", "e", "p")]);
+        let meta = label_meta("p", &graph).unwrap();
+        assert_eq!(meta.nvals, 3);
+        assert_eq!(meta.nonzero_rows, 2);
+        assert_eq!(meta.nonzero_cols, 3);
+    }
 }

@@ -9,6 +9,14 @@ pub(crate) use wrappers::{
     ThreadScope, compute_outer_inner, ensure_grb_init, set_global_matrix_storage_hint,
 };
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum MatrixStatsMode {
+    #[default]
+    None,
+    Basic,
+    Extended,
+}
+
 use std::marker::PhantomData;
 use std::sync::Arc;
 
@@ -34,6 +42,9 @@ pub enum GraphError {
     /// [`GraphDecomposition::get_graph`] was called with an unknown label.
     #[error("Label not found: '{0}'")]
     LabelNotFound(String),
+
+    #[error("unable to build optimizer statistics for label '{0}'")]
+    Statistics(String),
 
     /// A format-layer error propagated through [`GraphBuilder::load`].
     #[error("Format error: {0}")]

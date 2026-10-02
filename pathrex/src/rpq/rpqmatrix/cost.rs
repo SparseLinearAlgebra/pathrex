@@ -1,13 +1,13 @@
-use std::{cmp::Ordering, collections::HashMap};
+use std::{cmp::Ordering, collections::HashMap, sync::Arc};
 
 use egg::{CostFunction, Id};
 
 use super::{
-    plan::RpqPlan,
+    plan::{LabelMeta, RpqPlan},
+    sampling::{MatrixSampler, SampledRelation, SamplingConfig},
     stats::{CountVector, LabelCountVectors},
 };
-
-
+use crate::graph::LagraphGraph;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct JoinCost {
@@ -63,9 +63,9 @@ impl CostFunction<RpqPlan> for JoinCostFn {
         match enode {
             RpqPlan::NamedVertex(_name) => JoinCost {
                 score: 0.0,
-                nnz: 1 as f64,
-                nnz_r: 1 as f64,
-                nnz_c: 1 as f64,
+                nnz: 1.0,
+                nnz_r: 1.0,
+                nnz_c: 1.0,
             },
 
             RpqPlan::Label(meta) => JoinCost {
@@ -82,7 +82,7 @@ impl CostFunction<RpqPlan> for JoinCostFn {
                 let denom = ca.nnz_r.max(cb.nnz_c).max(1.0);
                 let op_cost = (ca.nnz * cb.nnz) / denom;
                 let score = ca.score + cb.score + op_cost;
-                let nnz_est = ca.nnz * cb.nnz / self.n ;
+                let nnz_est = ca.nnz * cb.nnz / self.n;
 
                 JoinCost {
                     score,
@@ -180,18 +180,6 @@ impl CostFunction<RpqPlan> for JoinCostFn {
     }
 }
 
-// TODO: random cost fn for evaluating of accuracy of our solution
-// pub struct _RandomCostFn;
-// impl CostFunction<RpqPlan> for RandomCostFn {
-//     type Cost = f64;
-//     fn cost<C>(&mut self, _enode: &RpqPlan, _costs: C) -> Self::Cost
-//     where
-//         C: FnMut(Id) -> Self::Cost,
-//     {
-//         rand::random()
-//     }
-// }
-
 #[derive(Clone, Debug)]
 pub(super) struct MetaAcCost {
     score: f64,
@@ -221,35 +209,6 @@ impl Ord for MetaAcCost {
     }
 }
 
-#[derive(Clone, Debug)]
-pub(super) struct HybridCost {
-    score: f64,
-    nnz: f64,
-    nnz_r: f64,
-    nnz_c: f64,
-}
-
-impl PartialEq for HybridCost {
-    fn eq(&self, other: &Self) -> bool {
-        self.cmp(other).is_eq()
-    }
-}
-impl Eq for HybridCost {}
-impl PartialOrd for HybridCost {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-impl Ord for HybridCost {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.score
-            .total_cmp(&other.score)
-            .then(self.nnz.total_cmp(&other.nnz))
-            .then(self.nnz_r.total_cmp(&other.nnz_r))
-            .then(self.nnz_c.total_cmp(&other.nnz_c))
-    }
-}
-
 // Naive metadata estimator
 // got from 2.1 of paper https://mboehm7.github.io/resources/sigmod2019.pdf
 pub(super) struct MetaAcCostFn {
@@ -261,16 +220,7 @@ pub(super) struct MetaAcCostFn {
 fn metaac_matmul_nnz(lhs_nnz: f64, rhs_nnz: f64, n: f64) -> f64 {
     let output_cells = (n * n).max(1.0);
     let p = ((lhs_nnz / output_cells) * (rhs_nnz / output_cells)).clamp(0.0, 1.0);
-    (output_cells * (1.0 - (1.0 - p).powf(n))).clamp(0.0, output_cells)
-}
-
-// Due to Join cost fun estimates only join operation
-// and don't even estimate nnz of result matrices, I combine
-// it with metaac
-pub(super) struct HybridCostFn {
-    pub n: f64,
-    pub star_penalty: f64,
-    pub lr_multiplier: f64,
+    (-output_cells * (n * (-p).ln_1p()).exp_m1()).clamp(0.0, output_cells)
 }
 
 impl CostFunction<RpqPlan> for MetaAcCostFn {
@@ -333,21 +283,7 @@ impl CostFunction<RpqPlan> for MetaAcCostFn {
                     nnz_c: self.n,
                 }
             }
-            RpqPlan::LStar([a, b]) => {
-                let ca = costs(*a);
-                let cb = costs(*b);
-                let denom = ca.nnz_r.max(cb.nnz_c).max(1.0);
-                let op_cost = self.lr_multiplier * ca.nnz * cb.nnz / denom;
-                let score = ca.score + cb.score + op_cost;
-                let nnz_est = self.lr_multiplier * ca.nnz * cb.nnz / (self.n * self.n).max(1.0);
-                MetaAcCost {
-                    score,
-                    nnz: nnz_est,
-                    nnz_r: ca.nnz_r.min(self.n),
-                    nnz_c: cb.nnz_c.min(self.n),
-                }
-            }
-            RpqPlan::RStar([a, b]) => {
+            RpqPlan::LStar([a, b]) | RpqPlan::RStar([a, b]) => {
                 let ca = costs(*a);
                 let cb = costs(*b);
                 let denom = ca.nnz_r.max(cb.nnz_c).max(1.0);
@@ -363,6 +299,42 @@ impl CostFunction<RpqPlan> for MetaAcCostFn {
             }
         }
     }
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct HybridCost {
+    score: f64,
+    nnz: f64,
+    nnz_r: f64,
+    nnz_c: f64,
+}
+
+impl PartialEq for HybridCost {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other).is_eq()
+    }
+}
+impl Eq for HybridCost {}
+impl PartialOrd for HybridCost {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for HybridCost {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.score
+            .total_cmp(&other.score)
+            .then(self.nnz.total_cmp(&other.nnz))
+            .then(self.nnz_r.total_cmp(&other.nnz_r))
+            .then(self.nnz_c.total_cmp(&other.nnz_c))
+    }
+}
+
+// Join operation work with MetaAC result cardinality.
+pub(super) struct HybridCostFn {
+    pub n: f64,
+    pub star_penalty: f64,
+    pub lr_multiplier: f64,
 }
 
 impl CostFunction<RpqPlan> for HybridCostFn {
@@ -391,9 +363,7 @@ impl CostFunction<RpqPlan> for HybridCostFn {
                 let denom = ca.nnz_r.max(cb.nnz_c).max(1.0);
                 let op_cost = ca.nnz * cb.nnz / denom;
                 let score = ca.score + cb.score + op_cost;
-                let universe = (self.n * self.n).max(1.0);
-                let p = ((ca.nnz / universe) * (cb.nnz / universe)).clamp(0.0, 1.0);
-                let nnz_est = (universe * (1.0 - (1.0 - p).powf(self.n))).clamp(0.0, universe);
+                let nnz_est = metaac_matmul_nnz(ca.nnz, cb.nnz, self.n);
                 HybridCost {
                     score,
                     nnz: nnz_est,
@@ -428,21 +398,7 @@ impl CostFunction<RpqPlan> for HybridCostFn {
                     nnz_c: self.n,
                 }
             }
-            RpqPlan::LStar([a, b]) => {
-                let ca = costs(*a);
-                let cb = costs(*b);
-                let denom = ca.nnz_r.max(cb.nnz_c).max(1.0);
-                let op_cost = self.lr_multiplier * ca.nnz * cb.nnz / denom;
-                let score = ca.score + cb.score + op_cost;
-                let nnz_est = self.lr_multiplier * ca.nnz * cb.nnz / (self.n * self.n).max(1.0);
-                HybridCost {
-                    score,
-                    nnz: nnz_est,
-                    nnz_r: ca.nnz_r.min(self.n),
-                    nnz_c: cb.nnz_c.min(self.n),
-                }
-            }
-            RpqPlan::RStar([a, b]) => {
+            RpqPlan::LStar([a, b]) | RpqPlan::RStar([a, b]) => {
                 let ca = costs(*a);
                 let cb = costs(*b);
                 let denom = ca.nnz_r.max(cb.nnz_c).max(1.0);
@@ -493,6 +449,8 @@ impl Ord for MncCost {
     }
 }
 
+type MncMatmulKey = (usize, usize, usize, usize, Option<usize>, Option<usize>);
+
 pub(super) struct MncCostFn {
     n: f64,
     star_penalty: f64,
@@ -500,17 +458,13 @@ pub(super) struct MncCostFn {
     labels: HashMap<String, LabelCountVectors>,
     vertices: HashMap<String, LabelCountVectors>,
     dot_cache: HashMap<(usize, usize), f64>,
-    matmul_cache: HashMap<(usize, usize, usize, usize, Option<usize>, Option<usize>), f64>,
+    matmul_cache: HashMap<MncMatmulKey, f64>,
     scale_cache: HashMap<(usize, u64, u64), CountVector>,
     add_cache: HashMap<(usize, usize, u64, u64), CountVector>,
 }
 
 impl MncCostFn {
-    pub(super) fn new(
-        n: f64,
-        labels: HashMap<String, LabelCountVectors>,
-        vertices: HashMap<String, LabelCountVectors>,
-    ) -> Self {
+    pub(super) fn new(n: f64, labels: HashMap<String, LabelCountVectors>, vertices: HashMap<String, LabelCountVectors>) -> Self {
         Self {
             n,
             star_penalty: 50.0,
@@ -683,8 +637,8 @@ impl CostFunction<RpqPlan> for MncCostFn {
                 let counts = self.vertices.get(name);
                 let row_counts = counts.map(|v| v.row_counts.clone());
                 let col_counts = counts.map(|v| v.col_counts.clone());
-                let row_extended = counts.map(|v| v.row_extended.clone());
-                let col_extended = counts.map(|v| v.col_extended.clone());
+                let row_extended = counts.and_then(|v| v.row_extended.clone());
+                let col_extended = counts.and_then(|v| v.col_extended.clone());
                 MncCost {
                     score: 0.0,
                     nnz: 1.0,
@@ -700,8 +654,8 @@ impl CostFunction<RpqPlan> for MncCostFn {
                 let counts = self.labels.get(&meta.name);
                 let row_counts = counts.map(|v| v.row_counts.clone());
                 let col_counts = counts.map(|v| v.col_counts.clone());
-                let row_extended = counts.map(|v| v.row_extended.clone());
-                let col_extended = counts.map(|v| v.col_extended.clone());
+                let row_extended = counts.and_then(|v| v.row_extended.clone());
+                let col_extended = counts.and_then(|v| v.col_extended.clone());
                 MncCost {
                     score: 0.0,
                     nnz: meta.nvals as f64,
@@ -741,24 +695,7 @@ impl CostFunction<RpqPlan> for MncCostFn {
                     col_extended: None,
                 }
             }
-            RpqPlan::LStar([a, b]) => {
-                let ca = costs(*a);
-                let cb = costs(*b);
-                let denom = ca.nnz_r.max(cb.nnz_c).max(1.0);
-                let op_cost = self.lr_multiplier * ca.nnz * cb.nnz / denom;
-                let nnz_est = self.lr_multiplier * ca.nnz * cb.nnz / (self.n * self.n).max(1.0);
-                MncCost {
-                    score: ca.score + cb.score + op_cost,
-                    nnz: nnz_est,
-                    nnz_r: ca.nnz_r.min(self.n),
-                    nnz_c: cb.nnz_c.min(self.n),
-                    row_counts: None,
-                    col_counts: None,
-                    row_extended: None,
-                    col_extended: None,
-                }
-            }
-            RpqPlan::RStar([a, b]) => {
+            RpqPlan::LStar([a, b]) | RpqPlan::RStar([a, b]) => {
                 let ca = costs(*a);
                 let cb = costs(*b);
                 let denom = ca.nnz_r.max(cb.nnz_c).max(1.0);
@@ -779,6 +716,410 @@ impl CostFunction<RpqPlan> for MncCostFn {
     }
 }
 
+#[derive(Clone, Debug)]
+struct Estimate {
+    score: f64,
+    nnz: f64,
+    rows: f64,
+    cols: f64,
+}
+
+impl PartialEq for Estimate {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other).is_eq()
+    }
+}
+
+impl Eq for Estimate {}
+
+impl PartialOrd for Estimate {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Estimate {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.score
+            .total_cmp(&other.score)
+            .then(self.nnz.total_cmp(&other.nnz))
+            .then(self.rows.total_cmp(&other.rows))
+            .then(self.cols.total_cmp(&other.cols))
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct PangHybridEstimate {
+    estimate: Estimate,
+    identity: bool,
+}
+impl PartialEq for PangHybridEstimate {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other).is_eq()
+    }
+}
+impl Eq for PangHybridEstimate {}
+impl PartialOrd for PangHybridEstimate {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for PangHybridEstimate {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.estimate.cmp(&other.estimate)
+    }
+}
+
+pub(super) struct PangHybridCostFn {
+    n: f64,
+}
+
+impl PangHybridCostFn {
+    pub fn new(n: f64) -> Self {
+        Self { n }
+    }
+    fn label(&self, meta: &LabelMeta) -> PangHybridEstimate {
+        PangHybridEstimate {
+            estimate: Estimate {
+                score: 0.0,
+                nnz: meta.nvals as f64,
+                rows: meta.nonzero_rows as f64,
+                cols: meta.nonzero_cols as f64,
+            },
+            identity: false,
+        }
+    }
+    fn vertex(&self) -> PangHybridEstimate {
+        PangHybridEstimate {
+            estimate: Estimate {
+                score: 0.0,
+                nnz: 1.0,
+                rows: 1.0,
+                cols: 1.0,
+            },
+            identity: false,
+        }
+    }
+    fn product(&self, a: &PangHybridEstimate, b: &PangHybridEstimate, join_denominator: f64) -> (PangHybridEstimate, f64) {
+        let work = a.estimate.nnz * b.estimate.nnz / a.estimate.rows.max(b.estimate.cols).max(1.0);
+        // Eq. 10 with an effective J. Seq passes Join's denominator;
+        // closure passes n to approximate the support intersection.
+        let join = a.estimate.cols * b.estimate.rows / join_denominator;
+        let (nnz, rows, cols) = if join > 0.0 {
+            let pairs =
+                join * (a.estimate.nnz / a.estimate.cols) * (b.estimate.nnz / b.estimate.rows);
+            let nnz = pairs
+                .min(a.estimate.rows * b.estimate.cols)
+                .min(self.n * self.n);
+            (
+                nnz,
+                (a.estimate.rows * join / a.estimate.cols)
+                    .min(a.estimate.rows)
+                    .min(nnz),
+                (b.estimate.cols * join / b.estimate.rows)
+                    .min(b.estimate.cols)
+                    .min(nnz),
+            )
+        } else {
+            (0.0, 0.0, 0.0)
+        };
+        let mut out = PangHybridEstimate {
+            estimate: Estimate {
+                score: 0.0,
+                nnz,
+                rows,
+                cols,
+            },
+            identity: false,
+        };
+        if a.identity {
+            out = b.clone()
+        } else if b.identity {
+            out = a.clone()
+        }
+        out.estimate.score = 0.0;
+        (out, work)
+    }
+    fn alternate(&self, a: &PangHybridEstimate, b: &PangHybridEstimate) -> PangHybridEstimate {
+        if a.estimate.nnz == 0.0 {
+            return b.clone();
+        }
+        if b.estimate.nnz == 0.0 {
+            return a.clone();
+        }
+        if a.identity && b.identity {
+            let mut out = a.clone();
+            out.estimate.score = 0.0;
+            return out;
+        }
+        let n = self.n;
+        let overlap = a.estimate.nnz * b.estimate.nnz / (n * n).max(1.0);
+        let estimate = Estimate {
+            score: 0.0,
+            nnz: (a.estimate.nnz + b.estimate.nnz - overlap).clamp(0.0, n * n),
+            rows: (a.estimate.rows + b.estimate.rows
+                - a.estimate.rows * b.estimate.rows / n.max(1.0))
+            .clamp(0.0, n),
+            cols: (a.estimate.cols + b.estimate.cols
+                - a.estimate.cols * b.estimate.cols / n.max(1.0))
+            .clamp(0.0, n),
+        };
+        PangHybridEstimate {
+            estimate,
+            identity: false,
+        }
+    }
+    fn closure_steps(&self, body: &PangHybridEstimate, initial: f64) -> usize {
+        if body.estimate.nnz == 0.0 || initial == 0.0 {
+            return 1;
+        }
+        // Eq. 24 uses a separate support-intersection estimate. Using the
+        // Join-work proxy here would make growth >= 1 for every nonempty R.
+        let growth = body.estimate.nnz / self.n.max(1.0);
+        if growth == 0.0 {
+            return 1;
+        }
+        if growth >= 1.0 {
+            6
+        } else {
+            (-initial.max(1.0).ln() / growth.ln())
+                .ceil()
+                .clamp(1.0, 64.0) as usize
+        }
+    }
+    fn closure(&mut self, body: PangHybridEstimate, seed: PangHybridEstimate, left: bool, single: bool) -> PangHybridEstimate {
+        if body.identity {
+            if single {
+                let mut out = body;
+                out.estimate.score += self.n;
+                return out;
+            }
+            let mut out = seed;
+            out.estimate.score += body.estimate.score + body.estimate.nnz + out.estimate.nnz;
+            return out;
+        }
+        let initial = if single {
+            seed.estimate.nnz
+        } else if left {
+            self.product(&body, &seed, self.n.max(1.0)).0.estimate.nnz
+        } else {
+            self.product(&seed, &body, self.n.max(1.0)).0.estimate.nnz
+        };
+        let steps = self.closure_steps(&body, initial);
+        let mut result = seed.clone();
+        let mut power = seed.clone();
+        let mut score = body.estimate.score + if single { 0.0 } else { seed.estimate.score };
+        if single || (body.estimate.nnz > 0.0 && seed.estimate.nnz > 0.0) {
+            let products = steps - usize::from(single);
+            for _ in 0..products {
+                let (product, work) = if left {
+                    self.product(&body, &result, self.n.max(1.0))
+                } else {
+                    self.product(&result, &body, self.n.max(1.0))
+                };
+                let (next_power, _) = if left {
+                    self.product(&body, &power, self.n.max(1.0))
+                } else {
+                    self.product(&power, &body, self.n.max(1.0))
+                };
+                let mut next = if next_power.estimate.nnz < 1.0 {
+                    result.clone()
+                } else {
+                    self.alternate(&result, &next_power)
+                };
+                if single || !left {
+                    next.estimate.rows = seed.estimate.rows;
+                }
+                if single || left {
+                    next.estimate.cols = seed.estimate.cols;
+                }
+                next.estimate.nnz = next
+                    .estimate
+                    .nnz
+                    .min(next.estimate.rows * next.estimate.cols);
+                score += work + result.estimate.nnz + product.estimate.nnz + next.estimate.nnz;
+                result = next;
+                power = next_power;
+                if power.estimate.nnz < 1.0
+                    || result.estimate.nnz >= result.estimate.rows * result.estimate.cols
+                {
+                    break;
+                }
+            }
+        }
+        if single {
+            let plus = result.estimate.nnz;
+            result.estimate.nnz = (plus + self.n).min(self.n * self.n);
+            score += self.n + plus + result.estimate.nnz;
+            result.estimate.rows = self.n;
+            result.estimate.cols = self.n;
+            result.identity = body.estimate.nnz == 0.0
+        }
+        result.estimate.score = score;
+        result
+    }
+}
+
+impl CostFunction<RpqPlan> for PangHybridCostFn {
+    type Cost = PangHybridEstimate;
+    fn cost<C: FnMut(Id) -> PangHybridEstimate>(&mut self, node: &RpqPlan, mut costs: C) -> PangHybridEstimate {
+        match node {
+            RpqPlan::Label(meta) => self.label(meta),
+            RpqPlan::NamedVertex(_) => self.vertex(),
+            RpqPlan::Seq([a, b]) => {
+                let (a, b) = (costs(*a), costs(*b));
+                let denominator = a.estimate.rows.max(b.estimate.cols).max(1.0);
+                let (mut out, work) = self.product(&a, &b, denominator);
+                out.estimate.score = a.estimate.score + b.estimate.score + work;
+                out
+            }
+            RpqPlan::Alt([a, b]) => {
+                let (a, b) = (costs(*a), costs(*b));
+                let mut out = self.alternate(&a, &b);
+                out.estimate.score = a.estimate.score + b.estimate.score + out.estimate.nnz;
+                out
+            }
+            RpqPlan::Star([a]) => {
+                let a = costs(*a);
+                self.closure(a.clone(), a, false, true)
+            }
+            RpqPlan::LStar([a, b]) => self.closure(costs(*a), costs(*b), true, false),
+            RpqPlan::RStar([a, b]) => self.closure(costs(*b), costs(*a), false, false),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct SamplingEstimate {
+    base: HybridCost,
+    sample: Option<SampledRelation>,
+}
+impl PartialEq for SamplingEstimate {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other).is_eq()
+    }
+}
+impl Eq for SamplingEstimate {}
+impl PartialOrd for SamplingEstimate {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for SamplingEstimate {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.base.cmp(&other.base)
+    }
+}
+
+pub(super) struct SamplingCostFn {
+    // Provides operation costs and a fallback when the sampled relation is unusable.
+    baseline: HybridCostFn,
+    sampler: MatrixSampler,
+    label_ids: HashMap<String, usize>,
+    vertices: HashMap<String, usize>,
+}
+impl SamplingCostFn {
+    pub fn new(n: f64, mut graphs: Vec<(String, Arc<LagraphGraph>)>, vertices: HashMap<String, usize>, config: SamplingConfig) -> Self {
+        graphs.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        let label_ids = graphs.iter().enumerate().map(|(id, (name, _))| (name.clone(), id)).collect();
+        let matrices = graphs.iter().map(|(_, graph)| graph.matrix()).collect();
+        let fixed_vertices = vertices.values().copied().collect::<Vec<_>>();
+        Self {
+            baseline: HybridCostFn {
+                n,
+                star_penalty: 50.0,
+                lr_multiplier: 5.0,
+            },
+            sampler: MatrixSampler::new(n as usize, matrices, &fixed_vertices, config),
+            label_ids,
+            vertices,
+        }
+    }
+
+    fn sampled(&self, mut base: HybridCost, sample: Option<SampledRelation>, output_charged: bool) -> SamplingEstimate {
+        let old = base.nnz;
+        let estimate = self.sampler.estimate(sample.as_ref());
+        if estimate.converged && (estimate.exact || estimate.nnz > 0.0) {
+            base.nnz = estimate.nnz.min(estimate.rows * estimate.cols);
+            base.nnz_r = estimate.rows.min(base.nnz);
+            base.nnz_c = estimate.cols.min(base.nnz);
+            if output_charged {
+                base.score = (base.score + base.nnz - old).max(0.0);
+            }
+        }
+        SamplingEstimate { base, sample }
+    }
+}
+impl CostFunction<RpqPlan> for SamplingCostFn {
+    type Cost = SamplingEstimate;
+    fn cost<C: FnMut(Id) -> SamplingEstimate>(&mut self, node: &RpqPlan, mut costs: C) -> SamplingEstimate {
+        match node {
+            RpqPlan::Label(meta) => SamplingEstimate {
+                base: self.baseline.cost(node, |_| unreachable!()),
+                sample: self.sampler.label(self.label_ids[&meta.name]),
+            },
+            RpqPlan::NamedVertex(name) => SamplingEstimate {
+                base: self.baseline.cost(node, |_| unreachable!()),
+                sample: self.sampler.vertex(self.vertices[name]),
+            },
+            RpqPlan::Seq([a, b]) => {
+                let (left, right) = (costs(*a), costs(*b));
+                let base = self.baseline.cost(node, |id| {
+                    if id == *a {
+                        left.base.clone()
+                    } else {
+                        right.base.clone()
+                    }
+                });
+                let sample = self.sampler.seq(left.sample.as_ref(), right.sample.as_ref());
+                self.sampled(base, sample, false)
+            }
+            RpqPlan::Alt([a, b]) => {
+                let (left, right) = (costs(*a), costs(*b));
+                let base = self.baseline.cost(node, |id| {
+                    if id == *a {
+                        left.base.clone()
+                    } else {
+                        right.base.clone()
+                    }
+                });
+                let sample = self.sampler.alt(left.sample.as_ref(), right.sample.as_ref());
+                self.sampled(base, sample, true)
+            }
+            RpqPlan::LStar([a, b]) => {
+                let (left, right) = (costs(*a), costs(*b));
+                let base = self.baseline.cost(node, |id| {
+                    if id == *a {
+                        left.base.clone()
+                    } else {
+                        right.base.clone()
+                    }
+                });
+                let sample = self.sampler.closure(left.sample.as_ref(), right.sample.as_ref(), true);
+                self.sampled(base, sample, false)
+            }
+            RpqPlan::RStar([a, b]) => {
+                let (left, right) = (costs(*a), costs(*b));
+                let base = self.baseline.cost(node, |id| {
+                    if id == *a {
+                        left.base.clone()
+                    } else {
+                        right.base.clone()
+                    }
+                });
+                let sample = self.sampler.closure(right.sample.as_ref(), left.sample.as_ref(), false);
+                self.sampled(base, sample, false)
+            }
+            RpqPlan::Star([a]) => {
+                let child = costs(*a);
+                let base = self.baseline.cost(node, |_| child.base.clone());
+                let sample = self.sampler.star(child.sample.as_ref());
+                self.sampled(base, sample, false)
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use egg::RecExpr;
@@ -790,6 +1131,133 @@ mod tests {
     use crate::{graph::GraphDecomposition, utils::build_graph};
 
     use super::*;
+
+    #[test]
+    fn sampling_estimates_composed_relations() {
+        let graph = build_graph(&[("a", "b", "p"), ("b", "c", "p"), ("c", "d", "q")]);
+        let p = RpqPlan::Label(LabelMeta {
+            name: "p".to_string(),
+            nvals: 2,
+            nonzero_rows: 2,
+            nonzero_cols: 2,
+        });
+        let seq = RpqPlan::Seq([Id::from(0), Id::from(0)]);
+        let star = RpqPlan::Star([Id::from(0)]);
+        let q = RpqPlan::Label(LabelMeta {
+            name: "q".to_string(),
+            nvals: 1,
+            nonzero_rows: 1,
+            nonzero_cols: 1,
+        });
+        let left_star = RpqPlan::LStar([Id::from(0), Id::from(1)]);
+        let right_star = RpqPlan::RStar([Id::from(1), Id::from(0)]);
+        let matrices = ["p", "q"]
+            .into_iter()
+            .map(|name| (name.to_string(), graph.get_graph(name).unwrap()))
+            .collect::<Vec<_>>();
+        let config = SamplingConfig {
+            percent: 100,
+            seed: 0,
+            max_star_iterations: 4,
+        };
+        let mut sampled = SamplingCostFn::new(4.0, matrices, HashMap::new(), config);
+        let leaf = sampled.cost(&p, |_| unreachable!());
+        assert_eq!(sampled.cost(&seq, |_| leaf.clone()).base.nnz, 1.0);
+        assert_eq!(sampled.cost(&star, |_| leaf.clone()).base.nnz, 7.0);
+        let q_leaf = sampled.cost(&q, |_| unreachable!());
+        let alt = RpqPlan::Alt([Id::from(0), Id::from(1)]);
+        let union = sampled.cost(&alt, |id| if id == Id::from(0) { leaf.clone() } else { q_leaf.clone() });
+        assert_eq!(union.base.nnz, 3.0);
+        assert_eq!(union.base.score, 3.0);
+        let child = |id| {
+            if id == Id::from(0) {
+                leaf.clone()
+            } else {
+                q_leaf.clone()
+            }
+        };
+        assert_eq!(sampled.cost(&left_star, child).base.nnz, 3.0);
+        let child = |id| {
+            if id == Id::from(0) {
+                leaf.clone()
+            } else {
+                q_leaf.clone()
+            }
+        };
+        assert_eq!(sampled.cost(&right_star, child).base.nnz, 1.0);
+    }
+
+    #[test]
+    fn metaac_product_retains_small_estimates_on_large_graphs() {
+        let estimate = metaac_matmul_nnz(1_000.0, 1_000.0, 100_000_000.0);
+        assert!((estimate - 0.01).abs() < 1e-10);
+    }
+
+    #[test]
+    fn pang_hybrid_star_steps_follow_growth() {
+        let model = PangHybridCostFn::new(4.0);
+        let sparse = PangHybridEstimate {
+            estimate: Estimate {
+                score: 0.0,
+                nnz: 2.0,
+                rows: 2.0,
+                cols: 2.0,
+            },
+            identity: false,
+        };
+        let dense = PangHybridEstimate {
+            estimate: Estimate {
+                score: 0.0,
+                nnz: 4.0,
+                rows: 2.0,
+                cols: 2.0,
+            },
+            identity: false,
+        };
+        assert_eq!(model.closure_steps(&sparse, sparse.estimate.nnz), 1);
+        assert_eq!(model.closure_steps(&dense, dense.estimate.nnz), 6);
+    }
+
+    #[test]
+    fn pang_hybrid_identity_remains_consistent_through_union_and_star() {
+        let mut model = PangHybridCostFn::new(4.0);
+        let empty = PangHybridEstimate {
+            estimate: Estimate {
+                score: 0.0,
+                nnz: 0.0,
+                rows: 0.0,
+                cols: 0.0,
+            },
+            identity: false,
+        };
+        let identity = model.closure(empty.clone(), empty, false, true);
+        let union = model.alternate(&identity, &identity);
+        let nested_star = model.closure(identity.clone(), identity, false, true);
+        for result in [union, nested_star.clone()] {
+            assert!(result.identity);
+            assert_eq!(result.estimate.nnz, 4.0);
+            assert_eq!(result.estimate.rows, 4.0);
+            assert_eq!(result.estimate.cols, 4.0);
+        }
+
+        let operand = PangHybridEstimate {
+            estimate: Estimate {
+                score: 1.0,
+                nnz: 2.0,
+                rows: 1.0,
+                cols: 2.0,
+            },
+            identity: false,
+        };
+        let left = model.closure(nested_star.clone(), operand.clone(), true, false);
+        let right = model.closure(nested_star, operand.clone(), false, false);
+        for result in [left, right] {
+            assert!(!result.identity);
+            assert_eq!(result.estimate.nnz, operand.estimate.nnz);
+            assert_eq!(result.estimate.rows, operand.estimate.rows);
+            assert_eq!(result.estimate.cols, operand.estimate.cols);
+        }
+    }
 
     #[test]
     fn independent_costs_preserve_seq_estimates() {
@@ -1037,7 +1505,7 @@ mod tests {
             seq,
             JoinCost {
                 score: 65.0,
-                nnz: 0.06,
+                nnz: 6.0,
                 nnz_r: 4.0,
                 nnz_c: 10.0,
             }
@@ -1080,7 +1548,7 @@ mod tests {
             seq,
             JoinCost {
                 score: 605.0,
-                nnz: 0.06,
+                nnz: 6.0,
                 nnz_r: 0.0,
                 nnz_c: 0.0,
             }

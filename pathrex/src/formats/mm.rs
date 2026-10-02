@@ -29,6 +29,7 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use crate::formats::FormatError;
+use crate::graph::MatrixStatsMode;
 pub use crate::graph::load_mm_file;
 
 // Trims first "<" and last ">".
@@ -129,6 +130,7 @@ pub(crate) fn parse_index_map(path: &Path) -> Result<IndexMap, FormatError> {
 pub struct MatrixMarket {
     pub(crate) dir: PathBuf,
     pub(crate) base_iri: Option<String>,
+    pub(crate) stats_mode: MatrixStatsMode,
 }
 
 impl MatrixMarket {
@@ -137,11 +139,17 @@ impl MatrixMarket {
         Self {
             dir: dir.into(),
             base_iri: None,
+            stats_mode: MatrixStatsMode::None,
         }
     }
 
     pub fn with_base_iri(mut self, base: impl Into<String>) -> Self {
         self.base_iri = Some(base.into());
+        self
+    }
+
+    pub fn with_matrix_stats(mut self, mode: MatrixStatsMode) -> Self {
+        self.stats_mode = mode;
         self
     }
 

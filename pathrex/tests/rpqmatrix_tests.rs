@@ -7,7 +7,9 @@ use pathrex::eval::ResultCount;
 use pathrex::formats::mm::MatrixMarket;
 use pathrex::graph::{Graph, GraphDecomposition, GraphError, InMemory, InMemoryGraph};
 use pathrex::lagraph_sys::{GrB_Index, GrB_Info, GrB_Matrix_extractElement_BOOL};
-use pathrex::rpq::rpqmatrix::OptimizationStrategy::{Hybrid, Join, MetaAc, Mnc};
+use pathrex::rpq::rpqmatrix::OptimizationStrategy::{
+    Hybrid, Join, MetaAc, Mnc, PangHybrid, Sampling,
+};
 use pathrex::rpq::rpqmatrix::eval::RpqMatrixEvaluator;
 use pathrex::rpq::rpqmatrix::result::RpqMatrixResult;
 use pathrex::rpq::{Endpoint, PathExpr, PreparedRpq, RpqError, RpqEvaluator, RpqQuery};
@@ -549,6 +551,16 @@ fn test_la_n_egg_any_con_join_optimizer() {
 #[test]
 fn test_la_n_egg_cases_with_core_optimizers() {
     for optimizer in [MetaAc, Mnc, Hybrid] {
+        let evaluator = RpqMatrixEvaluator::optimized(optimizer);
+        for case in ["any-any", "any-con", "con-any"] {
+            run_la_n_egg_case_with_evaluator(case, evaluator.clone());
+        }
+    }
+}
+
+#[test]
+fn test_la_n_egg_cases_with_restored_optimizers() {
+    for optimizer in [PangHybrid, Sampling] {
         let evaluator = RpqMatrixEvaluator::optimized(optimizer);
         for case in ["any-any", "any-con", "con-any"] {
             run_la_n_egg_case_with_evaluator(case, evaluator.clone());

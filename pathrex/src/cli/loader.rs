@@ -12,11 +12,11 @@ use thiserror::Error;
 use crate::formats::Csv;
 use crate::formats::MatrixMarket;
 use crate::formats::Rdf;
-use crate::graph::{Graph, GraphError, InMemory, InMemoryGraph};
+use crate::graph::{Graph, GraphError, InMemory, InMemoryGraph, MatrixStatsMode};
 use crate::rpq::{RpqError, RpqQuery};
 use crate::sparql::parse_rpq;
 
-use super::args::GraphFormat;
+use super::args::{GraphFormat, RpqMatrixOptimizer};
 
 #[derive(Debug, Error)]
 pub enum GraphLoadError {
@@ -34,19 +34,34 @@ pub enum GraphLoadError {
     },
 }
 
-/// Load an [`InMemoryGraph`] from `graph_path` in the given `format`.
+/// Load a graph without optimizer-specific statistics.
 pub fn load_graph(
     graph_path: &str,
     format: GraphFormat,
     base_iri: Option<&str>,
 ) -> Result<InMemoryGraph, GraphLoadError> {
+    load_graph_with_optimizer(graph_path, format, base_iri, RpqMatrixOptimizer::None)
+}
+
+/// Load a graph with statistics required by the selected optimizer.
+pub fn load_graph_with_optimizer(
+    graph_path: &str,
+    format: GraphFormat,
+    base_iri: Option<&str>,
+    optimizer: RpqMatrixOptimizer,
+) -> Result<InMemoryGraph, GraphLoadError> {
     match format {
         GraphFormat::Mm => {
+            let stats_mode = match optimizer {
+                RpqMatrixOptimizer::Mnc => MatrixStatsMode::Extended,
+                _ => MatrixStatsMode::None,
+            };
             let mm_base = MatrixMarket::from_dir(graph_path);
             let mm = match base_iri {
                 Some(iri) => mm_base.with_base_iri(iri),
                 None => mm_base,
-            };
+            }
+            .with_matrix_stats(stats_mode);
             Graph::<InMemory>::try_from(mm).map_err(|e| GraphLoadError::Build {
                 path: graph_path.to_string(),
                 source: e,
@@ -72,6 +87,51 @@ pub fn load_graph(
                 path: graph_path.to_string(),
                 source: e,
             })
+        }
+    }
+}
+
+#[cfg(test)]
+mod graph_stats_tests {
+    use super::*;
+    use crate::graph::GraphDecomposition;
+
+    #[test]
+    fn matrix_statistics_depend_on_optimizer() {
+        for (optimizer, basic, extended) in [
+            (RpqMatrixOptimizer::Join, false, false),
+            (RpqMatrixOptimizer::MetaAc, false, false),
+            (RpqMatrixOptimizer::Hybrid, false, false),
+            (RpqMatrixOptimizer::None, false, false),
+            (RpqMatrixOptimizer::PangHybrid, false, false),
+            (RpqMatrixOptimizer::Sampling, false, false),
+            (RpqMatrixOptimizer::Mnc, true, true),
+        ] {
+            let graph = load_graph_with_optimizer(
+                "tests/testdata/mm_small",
+                GraphFormat::Mm,
+                None,
+                optimizer,
+            )
+            .unwrap();
+            let counts = graph
+                .get_metadata()
+                .unwrap()
+                .matrix("knows")
+                .unwrap()
+                .counts
+                .as_ref();
+            assert_eq!(counts.is_some(), basic, "{optimizer}");
+            assert_eq!(
+                counts.and_then(|c| c.row_extended.as_ref()).is_some(),
+                extended,
+                "{optimizer}"
+            );
+            assert_eq!(
+                counts.and_then(|c| c.col_extended.as_ref()).is_some(),
+                extended,
+                "{optimizer}"
+            );
         }
     }
 }
