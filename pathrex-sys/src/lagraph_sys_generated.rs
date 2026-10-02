@@ -374,6 +374,40 @@ unsafe extern "C" {
     ) -> GrB_Info;
 }
 unsafe extern "C" {
+    pub fn LAGraph_RPQMatrix_sample_submatrix(
+        result: *mut GrB_Matrix,
+        source: GrB_Matrix,
+        vertices: *const GrB_Index,
+        count: GrB_Index,
+    ) -> GrB_Info;
+}
+unsafe extern "C" {
+    pub fn LAGraph_RPQMatrix_sample_identity(result: *mut GrB_Matrix, n: GrB_Index) -> GrB_Info;
+}
+unsafe extern "C" {
+    pub fn LAGraph_RPQMatrix_sample_apply(
+        result: *mut GrB_Matrix,
+        lhs: GrB_Matrix,
+        rhs: GrB_Matrix,
+    ) -> GrB_Info;
+}
+unsafe extern "C" {
+    pub fn LAGraph_RPQMatrix_sample_union(
+        result: *mut GrB_Matrix,
+        lhs: GrB_Matrix,
+        rhs: GrB_Matrix,
+    ) -> GrB_Info;
+}
+unsafe extern "C" {
+    pub fn LAGraph_RPQMatrix_sample_stats(
+        nvals: *mut GrB_Index,
+        active_rows: *mut GrB_Index,
+        active_cols: *mut GrB_Index,
+        diagonal_nvals: *mut GrB_Index,
+        sample: GrB_Matrix,
+    ) -> GrB_Info;
+}
+unsafe extern "C" {
     pub fn LAGraph_RPQMatrix_reduce_count_vector(
         res: *mut GrB_Vector,
         mat: GrB_Matrix,
