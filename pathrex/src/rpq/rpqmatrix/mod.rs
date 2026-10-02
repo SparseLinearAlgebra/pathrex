@@ -6,7 +6,8 @@ mod expr;
 mod optimize;
 mod plan;
 pub mod result;
-mod stats;
+mod sampling;
+pub(crate) mod stats;
 
 pub use eval::RpqMatrixEvaluator;
 pub use optimize::OptimizationStrategy;

@@ -65,7 +65,7 @@ pub struct CommonArgs {
     #[arg(short = 'a', long, value_enum, num_args = 1.., required = true)]
     pub algo: Vec<Algo>,
 
-    /// Optimizer type (only for the RPQMatrix algorithm and MatrixMarket source graph).
+    /// Optimizer type (only for the RPQMatrix algorithm).
     #[arg(
         short = 'p',
         long = "rpqmatrix-optimizer",
@@ -172,20 +172,15 @@ impl BenchArgs {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, ValueEnum, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[value(rename_all = "lowercase")]
 pub enum BenchMode {
     /// Fixed number of runs per query.
+    #[default]
     Fixed,
     /// Criterion time-based benchmark.
     Criterion,
-}
-
-impl Default for BenchMode {
-    fn default() -> Self {
-        Self::Fixed
-    }
 }
 
 impl std::fmt::Display for BenchMode {
@@ -236,8 +231,8 @@ impl std::fmt::Display for GraphFormat {
 }
 
 /// Optimizer types.
-/// Only for RPQMatrix algorithm and MatrixMarket source graph.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, serde::Serialize, serde::Deserialize)]
+/// Only for the RPQMatrix algorithm.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, ValueEnum, serde::Serialize, serde::Deserialize)]
 #[value(rename_all = "lowercase")]
 #[serde(rename_all = "lowercase")]
 pub enum RpqMatrixOptimizer {
@@ -250,14 +245,16 @@ pub enum RpqMatrixOptimizer {
     Mnc,
     /// Join work model with MetaAC result estimates.
     Hybrid,
+    /// Size-based Join estimates with Pang-inspired closures.
+    #[value(name = "pang-hybrid")]
+    #[serde(rename = "pang-hybrid")]
+    PangHybrid,
+    /// GraphBLAS induced-subgraph sampling estimator for composed expressions.
+    #[value(name = "sampling")]
+    Sampling,
     /// Without any optimizations.
+    #[default]
     None,
-}
-
-impl Default for RpqMatrixOptimizer {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 impl std::fmt::Display for RpqMatrixOptimizer {
@@ -267,6 +264,8 @@ impl std::fmt::Display for RpqMatrixOptimizer {
             RpqMatrixOptimizer::MetaAc => write!(f, "metaac"),
             RpqMatrixOptimizer::Mnc => write!(f, "mnc"),
             RpqMatrixOptimizer::Hybrid => write!(f, "hybrid"),
+            RpqMatrixOptimizer::PangHybrid => write!(f, "pang-hybrid"),
+            RpqMatrixOptimizer::Sampling => write!(f, "sampling"),
             RpqMatrixOptimizer::None => write!(f, "none"),
         }
     }
@@ -280,6 +279,8 @@ impl From<RpqMatrixOptimizer> for OptimizationStrategy {
             RpqMatrixOptimizer::MetaAc => OptimizationStrategy::MetaAc,
             RpqMatrixOptimizer::Mnc => OptimizationStrategy::Mnc,
             RpqMatrixOptimizer::Hybrid => OptimizationStrategy::Hybrid,
+            RpqMatrixOptimizer::PangHybrid => OptimizationStrategy::PangHybrid,
+            RpqMatrixOptimizer::Sampling => OptimizationStrategy::Sampling,
         }
     }
 }
@@ -362,5 +363,53 @@ mod tests {
         assert_eq!(args.criterion_sample_size(), 20);
         assert_eq!(args.criterion_warm_up_secs(), 2);
         assert_eq!(args.criterion_measurement_secs(), 7);
+    }
+
+    #[test]
+    fn new_optimizer_names_are_the_only_supported_names() {
+        for (name, expected) in [
+            ("pang-hybrid", RpqMatrixOptimizer::PangHybrid),
+            ("sampling", RpqMatrixOptimizer::Sampling),
+        ] {
+            let cli = Cli::parse_from([
+                "pathrex",
+                "bench",
+                "--graph",
+                "graph",
+                "--queries",
+                "queries",
+                "--algo",
+                "rpqmatrix",
+                "--rpqmatrix-optimizer",
+                name,
+            ]);
+            let Commands::Bench(args) = cli.command else {
+                panic!("expected bench command")
+            };
+            assert_eq!(args.common.rpqmatrix_optimizer, expected);
+        }
+        for name in [
+            "rpq-static",
+            "row-sampling",
+            "hybrid-static-star",
+            "hybrid-sampled-star",
+            "sampling-hybrid",
+        ] {
+            assert!(
+                Cli::try_parse_from([
+                    "pathrex",
+                    "bench",
+                    "--graph",
+                    "graph",
+                    "--queries",
+                    "queries",
+                    "--algo",
+                    "rpqmatrix",
+                    "--rpqmatrix-optimizer",
+                    name,
+                ])
+                .is_err()
+            );
+        }
     }
 }

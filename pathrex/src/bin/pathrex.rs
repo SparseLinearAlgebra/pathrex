@@ -36,7 +36,7 @@ use pathrex::cli::args::{
 use pathrex::cli::bench::BenchError;
 use pathrex::cli::checkpoint::{BenchRunConfig, Checkpoint, CheckpointError, Checkpointer};
 use pathrex::cli::dispatch::{dispatch_bench, dispatch_query};
-use pathrex::cli::loader::{GraphLoadError, LoadedQuery, load_graph, load_queries};
+use pathrex::cli::loader::{GraphLoadError, LoadedQuery, load_graph_with_optimizer, load_queries};
 use pathrex::cli::output::{BenchMetadata, BenchOutput, QueryMetadata, QueryOutput};
 use pathrex::graph::{GraphDecomposition, InMemoryGraph};
 
@@ -174,8 +174,12 @@ fn run_query_cmd(args: QueryArgs) -> Result<(), MainError> {
     eprintln!();
 
     eprintln!("[1/2] Loading graph...");
-    let graph: InMemoryGraph =
-        load_graph(&common.graph, common.format, common.base_iri.as_deref())?;
+    let graph: InMemoryGraph = load_graph_with_optimizer(
+        &common.graph,
+        common.format,
+        common.base_iri.as_deref(),
+        common.rpqmatrix_optimizer,
+    )?;
     eprintln!("  nodes:  {}", graph.num_nodes());
     eprintln!("  labels: {}", graph.num_labels());
     eprintln!();
@@ -297,8 +301,12 @@ fn run_bench_cmd(args: BenchArgs) -> Result<(), MainError> {
     eprintln!();
 
     eprintln!("[1/4] Loading graph...");
-    let graph: InMemoryGraph =
-        load_graph(&common.graph, common.format, common.base_iri.as_deref())?;
+    let graph: InMemoryGraph = load_graph_with_optimizer(
+        &common.graph,
+        common.format,
+        common.base_iri.as_deref(),
+        common.rpqmatrix_optimizer,
+    )?;
     eprintln!("  nodes:  {}", graph.num_nodes());
     eprintln!("  labels: {}", graph.num_labels());
     eprintln!();

@@ -5,14 +5,15 @@ use rayon::prelude::*;
 
 use crate::formats::mm::{apply_base_iri, parse_index_map};
 use crate::formats::{Csv, MatrixMarket, Rdf};
+use crate::rpq::rpqmatrix::stats::LabelCountVectors;
 use crate::{
     graph::GraphSource,
     lagraph_sys::{GrB_Index, LAGraph_Kind},
 };
 
 use super::{
-    Backend, Edge, GraphBuilder, GraphDecomposition, GraphError, LagraphGraph, MatrixStorage,
-    ThreadScope, compute_outer_inner, load_mm_file,
+    Backend, Edge, GraphBuilder, GraphDecomposition, GraphError, LagraphGraph, MatrixStatsMode,
+    MatrixStorage, ThreadScope, compute_outer_inner, load_mm_file,
 };
 
 /// Marker type for the in-memory GraphBLAS-backed backend.
@@ -222,6 +223,7 @@ pub struct MatrixMetadata {
     pub nonzero_rows: usize,
     pub nonzero_cols: usize,
     pub nvals: usize,
+    pub(crate) counts: Option<LabelCountVectors>,
 }
 
 impl GraphDecomposition for InMemoryGraph {
@@ -336,9 +338,10 @@ impl GraphSource<InMemoryBuilder> for MatrixMarket {
                         let nvals = lg.nvals()?;
                         let metadata = MatrixMetadata {
                             dimension: dimension as usize,
-                            nonzero_rows: nonzero_rows,
-                            nonzero_cols: nonzero_cols,
+                            nonzero_rows,
+                            nonzero_cols,
                             nvals: nvals as usize,
+                            counts: None,
                         };
                         Ok((label, lg, lg_csc, metadata))
                     },
@@ -348,7 +351,18 @@ impl GraphSource<InMemoryBuilder> for MatrixMarket {
         let mut loaded_graphs = vec![];
         let mut loaded_graphs_csc = vec![];
         let mut loaded_metadata = vec![];
-        for (_i, (name, graph, graph_csc, meta)) in loaded.into_iter().enumerate() {
+        for (name, graph, graph_csc, mut meta) in loaded {
+            meta.counts = match self.stats_mode {
+                MatrixStatsMode::None => None,
+                MatrixStatsMode::Basic => Some(
+                    LabelCountVectors::from_matrix_basic(graph.matrix())
+                        .ok_or_else(|| GraphError::Statistics(name.clone()))?,
+                ),
+                MatrixStatsMode::Extended => Some(
+                    LabelCountVectors::from_matrix(graph.matrix())
+                        .ok_or_else(|| GraphError::Statistics(name.clone()))?,
+                ),
+            };
             loaded_graphs.push((name.clone(), graph));
             loaded_graphs_csc.push((name.clone(), graph_csc));
             loaded_metadata.push((name, meta));
