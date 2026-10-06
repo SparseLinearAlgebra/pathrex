@@ -464,7 +464,11 @@ pub(super) struct MncCostFn {
 }
 
 impl MncCostFn {
-    pub(super) fn new(n: f64, labels: HashMap<String, LabelCountVectors>, vertices: HashMap<String, LabelCountVectors>) -> Self {
+    pub(super) fn new(
+        n: f64,
+        labels: HashMap<String, LabelCountVectors>,
+        vertices: HashMap<String, LabelCountVectors>,
+    ) -> Self {
         Self {
             n,
             star_penalty: 50.0,
@@ -800,7 +804,12 @@ impl PangHybridCostFn {
             identity: false,
         }
     }
-    fn product(&self, a: &PangHybridEstimate, b: &PangHybridEstimate, join_denominator: f64) -> (PangHybridEstimate, f64) {
+    fn product(
+        &self,
+        a: &PangHybridEstimate,
+        b: &PangHybridEstimate,
+        join_denominator: f64,
+    ) -> (PangHybridEstimate, f64) {
         let work = a.estimate.nnz * b.estimate.nnz / a.estimate.rows.max(b.estimate.cols).max(1.0);
         // Eq. 10 with an effective J. Seq passes Join's denominator;
         // closure passes n to approximate the support intersection.
@@ -887,7 +896,13 @@ impl PangHybridCostFn {
                 .clamp(1.0, 64.0) as usize
         }
     }
-    fn closure(&mut self, body: PangHybridEstimate, seed: PangHybridEstimate, left: bool, single: bool) -> PangHybridEstimate {
+    fn closure(
+        &mut self,
+        body: PangHybridEstimate,
+        seed: PangHybridEstimate,
+        left: bool,
+        single: bool,
+    ) -> PangHybridEstimate {
         if body.identity {
             if single {
                 let mut out = body;
@@ -962,7 +977,11 @@ impl PangHybridCostFn {
 
 impl CostFunction<RpqPlan> for PangHybridCostFn {
     type Cost = PangHybridEstimate;
-    fn cost<C: FnMut(Id) -> PangHybridEstimate>(&mut self, node: &RpqPlan, mut costs: C) -> PangHybridEstimate {
+    fn cost<C: FnMut(Id) -> PangHybridEstimate>(
+        &mut self,
+        node: &RpqPlan,
+        mut costs: C,
+    ) -> PangHybridEstimate {
         match node {
             RpqPlan::Label(meta) => self.label(meta),
             RpqPlan::NamedVertex(_) => self.vertex(),
@@ -1019,9 +1038,18 @@ pub(super) struct SamplingCostFn {
     vertices: HashMap<String, usize>,
 }
 impl SamplingCostFn {
-    pub fn new(n: f64, mut graphs: Vec<(String, Arc<LagraphGraph>)>, vertices: HashMap<String, usize>, config: SamplingConfig) -> Self {
+    pub fn new(
+        n: f64,
+        mut graphs: Vec<(String, Arc<LagraphGraph>)>,
+        vertices: HashMap<String, usize>,
+        config: SamplingConfig,
+    ) -> Self {
         graphs.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-        let label_ids = graphs.iter().enumerate().map(|(id, (name, _))| (name.clone(), id)).collect();
+        let label_ids = graphs
+            .iter()
+            .enumerate()
+            .map(|(id, (name, _))| (name.clone(), id))
+            .collect();
         let matrices = graphs.iter().map(|(_, graph)| graph.matrix()).collect();
         let fixed_vertices = vertices.values().copied().collect::<Vec<_>>();
         Self {
@@ -1036,7 +1064,12 @@ impl SamplingCostFn {
         }
     }
 
-    fn sampled(&self, mut base: HybridCost, sample: Option<SampledRelation>, output_charged: bool) -> SamplingEstimate {
+    fn sampled(
+        &self,
+        mut base: HybridCost,
+        sample: Option<SampledRelation>,
+        output_charged: bool,
+    ) -> SamplingEstimate {
         let old = base.nnz;
         let estimate = self.sampler.estimate(sample.as_ref());
         if estimate.converged && (estimate.exact || estimate.nnz > 0.0) {
@@ -1052,7 +1085,11 @@ impl SamplingCostFn {
 }
 impl CostFunction<RpqPlan> for SamplingCostFn {
     type Cost = SamplingEstimate;
-    fn cost<C: FnMut(Id) -> SamplingEstimate>(&mut self, node: &RpqPlan, mut costs: C) -> SamplingEstimate {
+    fn cost<C: FnMut(Id) -> SamplingEstimate>(
+        &mut self,
+        node: &RpqPlan,
+        mut costs: C,
+    ) -> SamplingEstimate {
         match node {
             RpqPlan::Label(meta) => SamplingEstimate {
                 base: self.baseline.cost(node, |_| unreachable!()),
@@ -1071,7 +1108,9 @@ impl CostFunction<RpqPlan> for SamplingCostFn {
                         right.base.clone()
                     }
                 });
-                let sample = self.sampler.seq(left.sample.as_ref(), right.sample.as_ref());
+                let sample = self
+                    .sampler
+                    .seq(left.sample.as_ref(), right.sample.as_ref());
                 self.sampled(base, sample, false)
             }
             RpqPlan::Alt([a, b]) => {
@@ -1083,7 +1122,9 @@ impl CostFunction<RpqPlan> for SamplingCostFn {
                         right.base.clone()
                     }
                 });
-                let sample = self.sampler.alt(left.sample.as_ref(), right.sample.as_ref());
+                let sample = self
+                    .sampler
+                    .alt(left.sample.as_ref(), right.sample.as_ref());
                 self.sampled(base, sample, true)
             }
             RpqPlan::LStar([a, b]) => {
@@ -1095,7 +1136,9 @@ impl CostFunction<RpqPlan> for SamplingCostFn {
                         right.base.clone()
                     }
                 });
-                let sample = self.sampler.closure(left.sample.as_ref(), right.sample.as_ref(), true);
+                let sample =
+                    self.sampler
+                        .closure(left.sample.as_ref(), right.sample.as_ref(), true);
                 self.sampled(base, sample, false)
             }
             RpqPlan::RStar([a, b]) => {
@@ -1107,7 +1150,9 @@ impl CostFunction<RpqPlan> for SamplingCostFn {
                         right.base.clone()
                     }
                 });
-                let sample = self.sampler.closure(right.sample.as_ref(), left.sample.as_ref(), false);
+                let sample =
+                    self.sampler
+                        .closure(right.sample.as_ref(), left.sample.as_ref(), false);
                 self.sampled(base, sample, false)
             }
             RpqPlan::Star([a]) => {
@@ -1122,12 +1167,7 @@ impl CostFunction<RpqPlan> for SamplingCostFn {
 
 #[cfg(test)]
 mod tests {
-    use egg::RecExpr;
-
-    use crate::rpq::rpqmatrix::{
-        optimize::optimize_expr_join,
-        plan::{LabelMeta, RpqPlan},
-    };
+    use crate::rpq::rpqmatrix::plan::{LabelMeta, RpqPlan};
     use crate::{graph::GraphDecomposition, utils::build_graph};
 
     use super::*;
@@ -1166,7 +1206,13 @@ mod tests {
         assert_eq!(sampled.cost(&star, |_| leaf.clone()).base.nnz, 7.0);
         let q_leaf = sampled.cost(&q, |_| unreachable!());
         let alt = RpqPlan::Alt([Id::from(0), Id::from(1)]);
-        let union = sampled.cost(&alt, |id| if id == Id::from(0) { leaf.clone() } else { q_leaf.clone() });
+        let union = sampled.cost(&alt, |id| {
+            if id == Id::from(0) {
+                leaf.clone()
+            } else {
+                q_leaf.clone()
+            }
+        });
         assert_eq!(union.base.nnz, 3.0);
         assert_eq!(union.base.score, 3.0);
         let child = |id| {
@@ -1655,50 +1701,6 @@ mod tests {
 
         assert_eq!(lstar, expected);
         assert_eq!(rstar, expected);
-    }
-    #[test]
-    fn join_cost_build_lstar() {
-        let mut expr = RecExpr::default();
-        let a = expr.add(RpqPlan::Label(LabelMeta {
-            name: "knows".to_string(),
-            nvals: 17,
-            nonzero_rows: 5,
-            nonzero_cols: 9,
-        }));
-        let b = expr.add(RpqPlan::Label(LabelMeta {
-            name: "knows".to_string(),
-            nvals: 17,
-            nonzero_rows: 5,
-            nonzero_cols: 9,
-        }));
-        let star = expr.add(RpqPlan::Star([a]));
-        let _seq = expr.add(RpqPlan::Seq([star, b]));
-        let opt = optimize_expr_join(expr, 100);
-        let root = opt.as_ref().last().expect("optimized expr is non-empty");
-
-        assert!(matches!(root, RpqPlan::LStar(_)));
-    }
-    #[test]
-    fn join_cost_build_rstar() {
-        let mut expr = RecExpr::default();
-        let a = expr.add(RpqPlan::Label(LabelMeta {
-            name: "knows".to_string(),
-            nvals: 17,
-            nonzero_rows: 5,
-            nonzero_cols: 9,
-        }));
-        let b = expr.add(RpqPlan::Label(LabelMeta {
-            name: "knows".to_string(),
-            nvals: 17,
-            nonzero_rows: 5,
-            nonzero_cols: 9,
-        }));
-        let star = expr.add(RpqPlan::Star([b]));
-        let _seq = expr.add(RpqPlan::Seq([a, star]));
-        let opt = optimize_expr_join(expr, 100);
-        let root = opt.as_ref().last().expect("optimized expr is non-empty");
-
-        assert!(matches!(root, RpqPlan::RStar(_)));
     }
     //TODO: maybe cover other rules
 }

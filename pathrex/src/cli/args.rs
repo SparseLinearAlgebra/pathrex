@@ -172,7 +172,9 @@ impl BenchArgs {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, ValueEnum, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Default, Clone, Copy, PartialEq, Eq, ValueEnum, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "lowercase")]
 #[value(rename_all = "lowercase")]
 pub enum BenchMode {
@@ -232,7 +234,9 @@ impl std::fmt::Display for GraphFormat {
 
 /// Optimizer types.
 /// Only for the RPQMatrix algorithm.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, ValueEnum, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Default, Clone, Copy, PartialEq, Eq, ValueEnum, serde::Serialize, serde::Deserialize,
+)]
 #[value(rename_all = "lowercase")]
 #[serde(rename_all = "lowercase")]
 pub enum RpqMatrixOptimizer {

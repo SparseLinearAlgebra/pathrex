@@ -1,32 +1,24 @@
 use super::expr::{materialize_with_storage, query_to_expr};
-use super::optimize::{
-    OptimizationStrategy, OptimizerCache, optimize_expr_hybrid, optimize_expr_join,
-    optimize_expr_metaac, optimize_expr_mnc, optimize_expr_pang_hybrid, optimize_expr_sampling,
-};
+use super::optimize::{EGraphOptimizer, OptimizationStrategy, RpqOptimizer};
 use super::result::{PreparedRpqMatrix, RpqMatrixResult};
 /// RPQ evaluator backed by `LAGraph_RPQMatrix`.
 use crate::eval::Evaluator;
 use crate::graph::{GraphDecomposition, MatrixStorage, set_global_matrix_storage_hint};
 use crate::rpq::{Endpoint, RpqError, RpqQuery};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct RpqMatrixEvaluator {
-    optimizer: OptimizationStrategy,
-    cache: Arc<Mutex<OptimizerCache>>,
+    optimizer: Arc<EGraphOptimizer>,
 }
 
 impl RpqMatrixEvaluator {
     pub fn unoptimized() -> Self {
-        RpqMatrixEvaluator {
-            optimizer: OptimizationStrategy::NoOpt,
-            cache: Arc::default(),
-        }
+        Self::optimized(OptimizationStrategy::NoOpt)
     }
     pub fn optimized(opt: OptimizationStrategy) -> Self {
         RpqMatrixEvaluator {
-            optimizer: opt,
-            cache: Arc::default(),
+            optimizer: Arc::new(EGraphOptimizer::new(opt)),
         }
     }
 }
@@ -58,25 +50,8 @@ impl Evaluator for RpqMatrixEvaluator {
         let storage = storage_for_query(query);
         set_global_matrix_storage_hint(storage)?;
 
-        let mut expr = query_to_expr(query, graph)?;
-        match self.optimizer {
-            OptimizationStrategy::NoOpt => {}
-            OptimizationStrategy::Join => {
-                expr = optimize_expr_join(expr, graph.num_nodes());
-            }
-            OptimizationStrategy::MetaAc => expr = optimize_expr_metaac(expr, graph.num_nodes()),
-            OptimizationStrategy::Mnc => expr = optimize_expr_mnc(expr, graph, &self.cache)?,
-            OptimizationStrategy::Hybrid => expr = optimize_expr_hybrid(expr, graph.num_nodes()),
-            OptimizationStrategy::PangHybrid => {
-                expr = optimize_expr_pang_hybrid(expr, graph.num_nodes())
-            }
-            OptimizationStrategy::Sampling => expr = optimize_expr_sampling(expr, graph)?,
-            OptimizationStrategy::RandomOpt
-            | OptimizationStrategy::Simple
-            | OptimizationStrategy::Wander => {
-                return Err(RpqError::UnsupportedPath(format!("optimizer {:?} is not implemented", self.optimizer)));
-            }
-        }
+        let expr = query_to_expr(query, graph)?;
+        let expr = self.optimizer.optimize(expr, graph)?;
 
         let (plans, owned_matrices) = materialize_with_storage(&expr, graph, storage)?;
 

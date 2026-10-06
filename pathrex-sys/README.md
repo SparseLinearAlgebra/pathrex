@@ -26,6 +26,10 @@ directory.
 
 ## System requirements
 
+The workspace MSRV is Rust 1.90. See the
+[local build guide](../README.md#local-build-linux) for installation, CLI build,
+and test commands.
+
 | Dependency | Purpose |
 |---|---|
 | **cmake** | Building GraphBLAS and LAGraph from source |

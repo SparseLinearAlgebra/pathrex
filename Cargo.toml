@@ -1,10 +1,10 @@
 [workspace]
-resolver = "2"
+resolver = "3"
 members = ["pathrex-sys", "pathrex"]
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.90"
 license = "MIT"
 repository = "https://github.com/SparseLinearAlgebra/pathrex"
 homepage = "https://github.com/SparseLinearAlgebra/pathrex"

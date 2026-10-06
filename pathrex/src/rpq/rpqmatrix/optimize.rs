@@ -10,7 +10,10 @@ use super::cost::{
 use super::plan::{RpqPlan, make_rules};
 use super::sampling::SamplingConfig;
 use super::stats::LabelCountVectors;
-use crate::{graph::{GraphDecomposition, LagraphGraph}, rpq::RpqError};
+use crate::{
+    graph::{GraphDecomposition, LagraphGraph},
+    rpq::RpqError,
+};
 
 static RULES: LazyLock<Vec<egg::Rewrite<RpqPlan, ()>>> = LazyLock::new(make_rules);
 
@@ -28,40 +31,155 @@ pub enum OptimizationStrategy {
     Wander,    // TODO
 }
 
-fn runner(expr: &RecExpr<RpqPlan>) -> Runner<RpqPlan, ()> {
-    Runner::default()
-        .with_explanations_disabled()
-        .with_expr(expr)
-        .run(&*RULES)
+/// Common interface for selecting an expression before plan materialization.
+///
+/// Graph access stays generic; no dynamic dispatch is required.
+pub(super) trait RpqOptimizer {
+    fn optimize<G: GraphDecomposition>(
+        &self,
+        expr: RecExpr<RpqPlan>,
+        graph: &G,
+    ) -> Result<RecExpr<RpqPlan>, RpqError>;
 }
 
-fn extract_with<C: egg::CostFunction<RpqPlan>>(expr: &RecExpr<RpqPlan>, cost: C) -> RecExpr<RpqPlan> {
-    let runner = runner(expr);
-    Extractor::new(&runner.egraph, cost)
-        .find_best(runner.roots[0])
-        .1
+/// E-graph optimization strategies and their reusable graph statistics.
+pub(super) struct EGraphOptimizer {
+    strategy: OptimizationStrategy,
+    cache: Mutex<OptimizerCache>,
 }
 
-pub(super) fn optimize_expr_join(expr: RecExpr<RpqPlan>, graph_size: usize) -> RecExpr<RpqPlan> {
-    extract_with(
-        &expr,
-        JoinCostFn {
-            n: graph_size as f64,
-            star_penalty: 50.0,
-            lr_multiplier: 5.0,
-        },
-    )
+impl EGraphOptimizer {
+    pub(super) fn new(strategy: OptimizationStrategy) -> Self {
+        Self {
+            strategy,
+            cache: Mutex::default(),
+        }
+    }
+
+    fn runner(expr: &RecExpr<RpqPlan>) -> Runner<RpqPlan, ()> {
+        Runner::default()
+            .with_explanations_disabled()
+            .with_expr(expr)
+            .run(&*RULES)
+    }
+
+    fn extract_with<C: egg::CostFunction<RpqPlan>>(
+        expr: &RecExpr<RpqPlan>,
+        cost: C,
+    ) -> RecExpr<RpqPlan> {
+        let runner = Self::runner(expr);
+        Extractor::new(&runner.egraph, cost)
+            .find_best(runner.roots[0])
+            .1
+    }
+
+    fn optimize_expr_join(&self, expr: RecExpr<RpqPlan>, graph_size: usize) -> RecExpr<RpqPlan> {
+        Self::extract_with(
+            &expr,
+            JoinCostFn {
+                n: graph_size as f64,
+                star_penalty: 50.0,
+                lr_multiplier: 5.0,
+            },
+        )
+    }
+
+    fn optimize_expr_metaac(&self, expr: RecExpr<RpqPlan>, n: usize) -> RecExpr<RpqPlan> {
+        Self::extract_with(
+            &expr,
+            MetaAcCostFn {
+                n: n as f64,
+                star_penalty: 50.0,
+                lr_multiplier: 5.0,
+            },
+        )
+    }
+
+    fn optimize_expr_mnc<G: GraphDecomposition>(
+        &self,
+        expr: RecExpr<RpqPlan>,
+        graph: &G,
+    ) -> Result<RecExpr<RpqPlan>, RpqError> {
+        let labels = cached_label_data(&labels(&expr), graph, &self.cache)?;
+        let vertices = vertices(&expr, graph)?;
+        let vertex_counts = vertex_counts(&vertices, graph.num_nodes(), &self.cache)?;
+        Ok(Self::extract_with(
+            &expr,
+            MncCostFn::new(graph.num_nodes() as f64, labels, vertex_counts),
+        ))
+    }
+
+    fn optimize_expr_hybrid(&self, expr: RecExpr<RpqPlan>, n: usize) -> RecExpr<RpqPlan> {
+        Self::extract_with(
+            &expr,
+            HybridCostFn {
+                n: n as f64,
+                star_penalty: 50.0,
+                lr_multiplier: 5.0,
+            },
+        )
+    }
+
+    fn optimize_expr_pang_hybrid(&self, expr: RecExpr<RpqPlan>, n: usize) -> RecExpr<RpqPlan> {
+        Self::extract_with(&expr, PangHybridCostFn::new(n as f64))
+    }
+
+    fn optimize_expr_sampling<G: GraphDecomposition>(
+        &self,
+        expr: RecExpr<RpqPlan>,
+        graph: &G,
+    ) -> Result<RecExpr<RpqPlan>, RpqError> {
+        let names = labels(&expr);
+        let matrices = names
+            .iter()
+            .map(|name| Ok((name.clone(), graph.get_graph(name)?)))
+            .collect::<Result<Vec<_>, RpqError>>()?;
+        let vertices = vertices(&expr, graph)?;
+        let parse = |name: &str, default: usize| {
+            std::env::var(name)
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(default)
+        };
+        let config = SamplingConfig {
+            percent: parse("RPQ_SAMPLE_PERCENT", 1).clamp(1, 100),
+            seed: std::env::var("RPQ_SAMPLE_SEED")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0),
+            max_star_iterations: parse("RPQ_SAMPLE_MAX_STAR_ITERS", 64),
+        };
+        Ok(Self::extract_with(
+            &expr,
+            SamplingCostFn::new(graph.num_nodes() as f64, matrices, vertices, config),
+        ))
+    }
 }
 
-pub(super) fn optimize_expr_metaac(expr: RecExpr<RpqPlan>, n: usize) -> RecExpr<RpqPlan> {
-    extract_with(
-        &expr,
-        MetaAcCostFn {
-            n: n as f64,
-            star_penalty: 50.0,
-            lr_multiplier: 5.0,
-        },
-    )
+impl RpqOptimizer for EGraphOptimizer {
+    fn optimize<G: GraphDecomposition>(
+        &self,
+        expr: RecExpr<RpqPlan>,
+        graph: &G,
+    ) -> Result<RecExpr<RpqPlan>, RpqError> {
+        match self.strategy {
+            OptimizationStrategy::NoOpt => Ok(expr),
+            OptimizationStrategy::Join => Ok(self.optimize_expr_join(expr, graph.num_nodes())),
+            OptimizationStrategy::MetaAc => Ok(self.optimize_expr_metaac(expr, graph.num_nodes())),
+            OptimizationStrategy::Mnc => self.optimize_expr_mnc(expr, graph),
+            OptimizationStrategy::Hybrid => Ok(self.optimize_expr_hybrid(expr, graph.num_nodes())),
+            OptimizationStrategy::PangHybrid => {
+                Ok(self.optimize_expr_pang_hybrid(expr, graph.num_nodes()))
+            }
+            OptimizationStrategy::Sampling => self.optimize_expr_sampling(expr, graph),
+            OptimizationStrategy::RandomOpt
+            | OptimizationStrategy::Simple
+            | OptimizationStrategy::Wander => Err(RpqError::UnsupportedPath(format!(
+                "optimizer {:?} is not implemented",
+                self.strategy
+            ))),
+        }
+    }
 }
 
 struct CachedLabel {
@@ -76,22 +194,16 @@ struct CachedVertex {
 }
 
 #[derive(Default)]
-pub(super) struct OptimizerCache {
+struct OptimizerCache {
     labels: HashMap<String, CachedLabel>,
     vertices: HashMap<String, CachedVertex>,
 }
 
-pub(super) fn optimize_expr_mnc<G: GraphDecomposition>(expr: RecExpr<RpqPlan>, graph: &G, cache: &Mutex<OptimizerCache>) -> Result<RecExpr<RpqPlan>, RpqError> {
-    let labels = cached_label_data(&labels(&expr), graph, cache)?;
-    let vertices = vertices(&expr, graph)?;
-    let vertex_counts = vertex_counts(&vertices, graph.num_nodes(), cache)?;
-    Ok(extract_with(
-        &expr,
-        MncCostFn::new(graph.num_nodes() as f64, labels, vertex_counts),
-    ))
-}
-
-fn cached_label_data<G: GraphDecomposition>(names: &HashSet<String>, graph: &G, cache: &Mutex<OptimizerCache>) -> Result<HashMap<String, LabelCountVectors>, RpqError> {
+fn cached_label_data<G: GraphDecomposition>(
+    names: &HashSet<String>,
+    graph: &G,
+    cache: &Mutex<OptimizerCache>,
+) -> Result<HashMap<String, LabelCountVectors>, RpqError> {
     let mut cache = cache.lock().expect("RPQ optimizer cache poisoned");
     let mut counts = HashMap::with_capacity(names.len());
     for name in names {
@@ -130,7 +242,11 @@ fn cached_label_data<G: GraphDecomposition>(names: &HashSet<String>, graph: &G, 
     Ok(counts)
 }
 
-fn vertex_counts(vertices: &HashMap<String, usize>, n: usize, cache: &Mutex<OptimizerCache>) -> Result<HashMap<String, LabelCountVectors>, RpqError> {
+fn vertex_counts(
+    vertices: &HashMap<String, usize>,
+    n: usize,
+    cache: &Mutex<OptimizerCache>,
+) -> Result<HashMap<String, LabelCountVectors>, RpqError> {
     let mut cache = cache.lock().expect("RPQ optimizer cache poisoned");
     vertices
         .iter()
@@ -160,42 +276,6 @@ fn vertex_counts(vertices: &HashMap<String, usize>, n: usize, cache: &Mutex<Opti
         .collect()
 }
 
-pub(super) fn optimize_expr_hybrid(expr: RecExpr<RpqPlan>, n: usize) -> RecExpr<RpqPlan> {
-    extract_with(
-        &expr,
-        HybridCostFn {
-            n: n as f64,
-            star_penalty: 50.0,
-            lr_multiplier: 5.0,
-        },
-    )
-}
-
-pub(super) fn optimize_expr_pang_hybrid(expr: RecExpr<RpqPlan>, n: usize) -> RecExpr<RpqPlan> {
-    extract_with(&expr, PangHybridCostFn::new(n as f64))
-}
-
-pub(super) fn optimize_expr_sampling<G: GraphDecomposition>(expr: RecExpr<RpqPlan>, graph: &G) -> Result<RecExpr<RpqPlan>, RpqError> {
-    let names = labels(&expr);
-    let matrices = names.iter().map(|name| Ok((name.clone(), graph.get_graph(name)?))).collect::<Result<Vec<_>, RpqError>>()?;
-    let vertices = vertices(&expr, graph)?;
-    let parse = |name: &str, default: usize| {
-        std::env::var(name)
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(default)
-    };
-    let config = SamplingConfig {
-        percent: parse("RPQ_SAMPLE_PERCENT", 1).clamp(1, 100),
-        seed: std::env::var("RPQ_SAMPLE_SEED")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(0),
-        max_star_iterations: parse("RPQ_SAMPLE_MAX_STAR_ITERS", 64),
-    };
-    Ok(extract_with(&expr, SamplingCostFn::new(graph.num_nodes() as f64, matrices, vertices, config)))
-}
-
 fn labels(expr: &RecExpr<RpqPlan>) -> HashSet<String> {
     expr.as_ref()
         .iter()
@@ -206,7 +286,10 @@ fn labels(expr: &RecExpr<RpqPlan>) -> HashSet<String> {
         .collect()
 }
 
-fn vertices<G: GraphDecomposition>(expr: &RecExpr<RpqPlan>, graph: &G) -> Result<HashMap<String, usize>, RpqError> {
+fn vertices<G: GraphDecomposition>(
+    expr: &RecExpr<RpqPlan>,
+    graph: &G,
+) -> Result<HashMap<String, usize>, RpqError> {
     expr.as_ref()
         .iter()
         .filter_map(|node| match node {
@@ -224,9 +307,34 @@ fn vertices<G: GraphDecomposition>(expr: &RecExpr<RpqPlan>, graph: &G) -> Result
 
 #[cfg(test)]
 mod tests {
+    use super::super::plan::LabelMeta;
     use super::*;
     use crate::formats::MatrixMarket;
     use crate::graph::{Graph, InMemory, MatrixStatsMode};
+
+    #[test]
+    fn no_opt_preserves_the_input_expression() {
+        let graph = crate::utils::build_graph(&[("a", "b", "p")]);
+        let expr: RecExpr<RpqPlan> = "(/ 1 2)".parse().unwrap();
+        let optimizer = EGraphOptimizer::new(OptimizationStrategy::NoOpt);
+        assert_eq!(optimizer.optimize(expr.clone(), &graph).unwrap(), expr);
+    }
+
+    #[test]
+    fn unimplemented_strategies_return_the_existing_error() {
+        let graph = crate::utils::build_graph(&[("a", "b", "p")]);
+        let expr: RecExpr<RpqPlan> = "1".parse().unwrap();
+        for strategy in [
+            OptimizationStrategy::RandomOpt,
+            OptimizationStrategy::Simple,
+            OptimizationStrategy::Wander,
+        ] {
+            let optimizer = EGraphOptimizer::new(strategy);
+            let error = optimizer.optimize(expr.clone(), &graph).unwrap_err();
+            assert!(matches!(error, RpqError::UnsupportedPath(message)
+                if message == format!("optimizer {strategy:?} is not implemented")));
+        }
+    }
 
     #[test]
     fn cached_labels_reuse_statistics_built_during_graph_load() {
@@ -292,7 +400,54 @@ mod tests {
 
         let second = crate::utils::build_graph(&[("a", "b", "p"), ("b", "c", "p")]);
         let new = cached_label_data(&names, &second, &cache).unwrap();
-        assert_ne!(old["p"].row_counts.cache_key(), new["p"].row_counts.cache_key());
+        assert_ne!(
+            old["p"].row_counts.cache_key(),
+            new["p"].row_counts.cache_key()
+        );
         assert_eq!(new["p"].row_counts.sum(), 2.0);
+    }
+    #[test]
+    fn join_cost_build_lstar() {
+        let mut expr = RecExpr::default();
+        let a = expr.add(RpqPlan::Label(LabelMeta {
+            name: "knows".to_string(),
+            nvals: 17,
+            nonzero_rows: 5,
+            nonzero_cols: 9,
+        }));
+        let b = expr.add(RpqPlan::Label(LabelMeta {
+            name: "knows".to_string(),
+            nvals: 17,
+            nonzero_rows: 5,
+            nonzero_cols: 9,
+        }));
+        let star = expr.add(RpqPlan::Star([a]));
+        let _seq = expr.add(RpqPlan::Seq([star, b]));
+        let opt = EGraphOptimizer::new(OptimizationStrategy::Join).optimize_expr_join(expr, 100);
+        let root = opt.as_ref().last().expect("optimized expr is non-empty");
+
+        assert!(matches!(root, RpqPlan::LStar(_)));
+    }
+    #[test]
+    fn join_cost_build_rstar() {
+        let mut expr = RecExpr::default();
+        let a = expr.add(RpqPlan::Label(LabelMeta {
+            name: "knows".to_string(),
+            nvals: 17,
+            nonzero_rows: 5,
+            nonzero_cols: 9,
+        }));
+        let b = expr.add(RpqPlan::Label(LabelMeta {
+            name: "knows".to_string(),
+            nvals: 17,
+            nonzero_rows: 5,
+            nonzero_cols: 9,
+        }));
+        let star = expr.add(RpqPlan::Star([b]));
+        let _seq = expr.add(RpqPlan::Seq([a, star]));
+        let opt = EGraphOptimizer::new(OptimizationStrategy::Join).optimize_expr_join(expr, 100);
+        let root = opt.as_ref().last().expect("optimized expr is non-empty");
+
+        assert!(matches!(root, RpqPlan::RStar(_)));
     }
 }

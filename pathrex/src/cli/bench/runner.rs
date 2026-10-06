@@ -117,7 +117,7 @@ fn timing_stats(samples_ns: &[f64]) -> TimingStats {
 
     let len = sorted.len();
     let mean = sorted.iter().sum::<f64>() / len as f64;
-    let median = if len % 2 == 0 {
+    let median = if len.is_multiple_of(2) {
         (sorted[len / 2 - 1] + sorted[len / 2]) / 2.0
     } else {
         sorted[len / 2]
