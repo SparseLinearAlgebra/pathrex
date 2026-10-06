@@ -72,7 +72,14 @@ impl CountVector {
         (code == GrB_Info::GrB_SUCCESS).then_some(result)
     }
 
-    pub(super) fn mnc_matmul_nnz(lhs_rows: &Self, lhs_cols: &Self, rhs_rows: &Self, rhs_cols: &Self, lhs_col_extended: Option<&Self>, rhs_row_extended: Option<&Self>) -> Option<f64> {
+    pub(super) fn mnc_matmul_nnz(
+        lhs_rows: &Self,
+        lhs_cols: &Self,
+        rhs_rows: &Self,
+        rhs_cols: &Self,
+        lhs_col_extended: Option<&Self>,
+        rhs_row_extended: Option<&Self>,
+    ) -> Option<f64> {
         let mut result = 0.0;
         let code = unsafe {
             LAGraph_RPQMatrix_count_vector_mnc_matmul_nnz(

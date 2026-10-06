@@ -12,7 +12,84 @@
 
 ## Architecture
 
-[Architecture diagram](docs/arc.png)
+The workspace contains the Rust API and CLI in `pathrex/` and the native
+build and FFI bindings in `pathrex-sys/`. See the
+[architecture and contributor guide](AGENTS.md#architecture--key-abstractions)
+for the current module layout and query preparation pipeline.
+
+## Local build (Linux)
+
+The minimum supported Rust version (MSRV) is **1.90**, not merely the version
+that introduced edition 2024. The current dependency set includes
+`ordered-float 5.5.0`, which requires Rust 1.90; the RDF/SPARQL dependencies
+also require a newer compiler than 1.85. Both workspace crates inherit the
+`rust-version` declared in the root `Cargo.toml`.
+The workspace uses [Cargo resolver 3](https://doc.rust-lang.org/edition-guide/rust-2024/cargo-resolver.html),
+which prefers dependency versions compatible with that declared Rust version.
+
+On Debian/Ubuntu, install the native build tools:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y build-essential cmake git git-lfs
+rustup toolchain install 1.90.0 --profile minimal
+```
+
+Run the following commands **from the Pathrex workspace root** (the directory
+containing this README; `Databases/pathrex` when using RPQ_bench):
+
+```bash
+git submodule update --init --recursive
+git lfs pull
+
+# CLI and benchmark support; the bench feature is required for the binary.
+cargo +1.90.0 build --release --features bench
+./target/release/pathrex --help
+./target/release/pathrex bench --help
+
+# Unit, integration, and documentation tests, including the CLI.
+cargo +1.90.0 test --workspace --features bench
+```
+
+For library-only development, use `cargo +1.90.0 build --workspace` instead of
+the CLI build above.
+
+Git LFS supplies the integration-test fixtures. An ordinary build uses the
+checked-in FFI bindings and **does not require Clang/libclang**. The build script
+fetches SuiteSparse:GraphBLAS at the pinned tag `v10.3.1`, builds it and the
+LAGraph submodule as static libraries, and links them automatically. No
+system-wide GraphBLAS/LAGraph installation or `LD_LIBRARY_PATH` is needed;
+the GCC OpenMP runtime (`libgomp` on Linux) remains a dynamic dependency.
+The first build requires network access for Cargo dependencies and GraphBLAS
+and performs a substantial native compilation. Subsequent builds reuse the
+files under `target/`. Reduce Cargo's job count with `-j 2` if memory is limited.
+
+When building from the **RPQ_bench root**, the equivalent CLI build is:
+
+```bash
+cargo +1.90.0 build --release --manifest-path Databases/pathrex/Cargo.toml --features bench
+Databases/pathrex/target/release/pathrex --help
+```
+
+`Cargo.lock` is currently ignored by this repository. Preserve the generated
+lockfile with the experiment artifacts and use `--locked` for subsequent builds
+and tests to keep dependency versions unchanged. The MSRV statement refers to
+the current dependency set, not to every future version allowed by the manifests.
+
+### Optional binding regeneration
+
+Only regenerate bindings when the native API changes:
+
+```bash
+sudo apt-get install -y clang libclang-dev
+cargo +1.90.0 build --workspace --features pathrex-sys/regenerate-bindings
+```
+
+This command rewrites `pathrex-sys/src/lagraph_sys_generated.rs`. Do not edit that
+file manually. If bindgen reports `stddef.h` missing, check that Clang and
+libclang come from compatible installations and remove stale include-path
+overrides such as `BINDGEN_EXTRA_CLANG_ARGS`; ordinary builds can use the
+checked-in bindings without regenerating them.
 
 ## Features
 
@@ -23,6 +100,8 @@
   RDF (Turtle / N-Triples).
 - **SPARQL frontend**: parses `SELECT` queries with a single triple/property-path
   pattern.
+- **RPQMatrix endpoint constraints**: variable endpoints, a fixed subject, a
+  fixed object, or both fixed endpoints; endpoint selectors are part of the plan.
 - **Benchmarking** with [`criterion`](https://crates.io/crates/criterion):
   per-query timing, JSON output, checkpoint/resume, optional HTML plots.
 - **Reusable Rust library** with backend-agnostic `Graph<B>`, `GraphSource`,
@@ -97,7 +176,7 @@ Subcommands:
 | `-q`, `--queries <FILE>` | Queries file (see format below). |
 | `-a`, `--algo <nfarpq\|rpqmatrix>` | Algorithm(s). Repeat to run several. |
 | `-b`, `--base-iri [<IRI>]` | Optional `BASE <iri>` to prepend to each query. Bare `--base-iri` uses `http://example.org/`. |
-| `-p`, `--rpqmatrix-optimizer <NAME>` | RPQMatrix optimizer: `none`, `join`, `metaac`, `mnc`, or `hybrid`. |
+| `-p`, `--rpqmatrix-optimizer <NAME>` | RPQMatrix optimizer: `none`, `join`, `metaac`, `mnc`, `hybrid`, `pang-hybrid`, or `sampling`. |
 
 
 `query` adds `-o, --output <FILE>` to write JSON.

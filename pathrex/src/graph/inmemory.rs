@@ -239,10 +239,10 @@ impl GraphDecomposition for InMemoryGraph {
         label: &str,
         storage: MatrixStorage,
     ) -> Result<Arc<LagraphGraph>, GraphError> {
-        if storage == MatrixStorage::Csc {
-            if let Some(graph) = self.graphs_csc.get(label) {
-                return Ok(Arc::clone(graph));
-            }
+        if storage == MatrixStorage::Csc
+            && let Some(graph) = self.graphs_csc.get(label)
+        {
+            return Ok(Arc::clone(graph));
         }
         self.get_graph(label)
     }
