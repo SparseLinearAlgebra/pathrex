@@ -6,6 +6,7 @@
 //!
 //! - `bench` — criterion-based benchmarking with checkpointing
 //! - `query` — single-shot query execution with result counts
+//! - `train-linear` — explicit offline least-squares calibration
 
 pub mod args;
 pub mod bench;

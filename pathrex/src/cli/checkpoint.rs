@@ -18,6 +18,8 @@ use thiserror::Error;
 
 use super::args::{Algo, BenchArgs, BenchMode, RpqMatrixOptimizer};
 
+const LINEAR_SEARCH_VERSION: &str = "exhaustive-parenthesizations-v1";
+
 /// Persistent checkpoint state written to disk as JSON.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Checkpoint {
@@ -32,7 +34,7 @@ pub struct Checkpoint {
     pub completed: Vec<QueryCompletion>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BenchRunConfig {
     pub bench_mode: BenchMode,
     pub runs: Option<u64>,
@@ -40,10 +42,20 @@ pub struct BenchRunConfig {
     pub sample_size: Option<usize>,
     pub warm_up_secs: Option<u64>,
     pub measurement_secs: Option<u64>,
+    /// Canonical decimal coefficients of the model actually used by this run.
+    /// Strings preserve identity across JSON round trips without float parsing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linear_model_coefficients: Option<[String; 3]>,
+    /// Prevent mixing results from the former fixed candidate bank on resume.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linear_search: Option<String>,
 }
 
 impl BenchRunConfig {
-    pub fn from_args(args: &BenchArgs) -> Self {
+    pub fn from_args(
+        args: &BenchArgs,
+        model: Option<&crate::rpq::rpqmatrix::LinearCostModel>,
+    ) -> Self {
         match args.bench_mode {
             BenchMode::Fixed => Self {
                 bench_mode: args.bench_mode,
@@ -52,6 +64,8 @@ impl BenchRunConfig {
                 sample_size: None,
                 warm_up_secs: None,
                 measurement_secs: None,
+                linear_model_coefficients: model.map(|m| m.coefficients().map(|c| c.to_string())),
+                linear_search: model.map(|_| LINEAR_SEARCH_VERSION.to_owned()),
             },
             BenchMode::Criterion => Self {
                 bench_mode: args.bench_mode,
@@ -60,6 +74,8 @@ impl BenchRunConfig {
                 sample_size: Some(args.criterion_sample_size()),
                 warm_up_secs: Some(args.criterion_warm_up_secs()),
                 measurement_secs: Some(args.criterion_measurement_secs()),
+                linear_model_coefficients: model.map(|m| m.coefficients().map(|c| c.to_string())),
+                linear_search: model.map(|_| LINEAR_SEARCH_VERSION.to_owned()),
             },
         }
     }
@@ -74,6 +90,8 @@ impl Default for BenchRunConfig {
             sample_size: None,
             warm_up_secs: None,
             measurement_secs: None,
+            linear_model_coefficients: None,
+            linear_search: None,
         }
     }
 }
@@ -224,6 +242,26 @@ pub struct Checkpointer {
 }
 
 impl Checkpointer {
+    pub(crate) fn validate_linear_model(
+        &self,
+        model: Option<&crate::rpq::rpqmatrix::LinearCostModel>,
+    ) -> Result<(), CheckpointError> {
+        if self.inner.bench_config.linear_model_coefficients
+            != model.map(|m| m.coefficients().map(|c| c.to_string()))
+        {
+            return Err(CheckpointError::Mismatch(
+                "linear model coefficients differ from this run".into(),
+            ));
+        }
+        if self.inner.bench_config.linear_search.as_deref() != model.map(|_| LINEAR_SEARCH_VERSION)
+        {
+            return Err(CheckpointError::Mismatch(
+                "linear plan search differs from this run".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Create a new checkpointer with no completions.
     pub fn fresh(
         graph_path: &str,
@@ -302,4 +340,121 @@ pub enum CheckpointError {
     /// Checkpoint parameters don't match current run.
     #[error("checkpoint mismatch: {0}")]
     Mismatch(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::args::{Cli, Commands};
+    use crate::rpq::rpqmatrix::LinearCostModel;
+    use clap::Parser;
+
+    #[test]
+    fn resume_checks_coefficients_even_when_model_path_is_unchanged() {
+        let Commands::Bench(args) = Cli::parse_from([
+            "pathrex",
+            "bench",
+            "-g",
+            "graph",
+            "-q",
+            "queries",
+            "-a",
+            "rpqmatrix",
+            "-p",
+            "stochastic",
+            "--linear-model",
+            "same.model",
+        ])
+        .command
+        else {
+            panic!("bench");
+        };
+        let model = LinearCostModel::from_coefficients([
+            0.12345678901234568,
+            -1.234567890123456e-120,
+            9.876543210987654e150,
+        ])
+        .unwrap();
+        let changed = LinearCostModel::from_coefficients([2.0, 3.0, 4.0]).unwrap();
+        let config = BenchRunConfig::from_args(&args, Some(&model));
+        let cp = Checkpoint::new(
+            "graph",
+            "queries",
+            &args.common.algo,
+            RpqMatrixOptimizer::Stochastic,
+            config.clone(),
+        );
+        let json = serde_json::to_string(&cp).unwrap();
+        let loaded: Checkpoint = serde_json::from_str(&json).unwrap();
+        assert!(
+            loaded
+                .validate(
+                    "graph",
+                    "queries",
+                    &args.common.algo,
+                    RpqMatrixOptimizer::Stochastic,
+                    &config
+                )
+                .is_ok()
+        );
+        let changed_config = BenchRunConfig::from_args(&args, Some(&changed));
+        assert!(
+            loaded
+                .validate(
+                    "graph",
+                    "queries",
+                    &args.common.algo,
+                    RpqMatrixOptimizer::Stochastic,
+                    &changed_config
+                )
+                .is_err()
+        );
+        let checkpointer = Checkpointer::with_inner(loaded, PathBuf::from("unused.json"));
+        assert!(checkpointer.validate_linear_model(Some(&model)).is_ok());
+        assert!(checkpointer.validate_linear_model(Some(&changed)).is_err());
+        assert!(checkpointer.validate_linear_model(None).is_err());
+
+        // Identical coefficients from the former selector do not identify the
+        // current exhaustive search. Older checkpoints deserialize but fail resume.
+        let mut former: serde_json::Value = serde_json::from_str(&json).unwrap();
+        former["bench_config"]
+            .as_object_mut()
+            .unwrap()
+            .remove("linear_search");
+        let former: Checkpoint = serde_json::from_value(former).unwrap();
+        assert!(
+            former
+                .validate(
+                    "graph",
+                    "queries",
+                    &args.common.algo,
+                    RpqMatrixOptimizer::Stochastic,
+                    &config,
+                )
+                .is_err()
+        );
+        assert!(
+            Checkpointer::with_inner(former, PathBuf::from("unused.json"))
+                .validate_linear_model(Some(&model))
+                .is_err()
+        );
+
+        let mut legacy: serde_json::Value = serde_json::from_str(&json).unwrap();
+        legacy["bench_config"]
+            .as_object_mut()
+            .unwrap()
+            .remove("linear_model_coefficients");
+        let legacy: Checkpoint = serde_json::from_value(legacy).unwrap();
+        assert!(
+            legacy
+                .validate(
+                    "graph",
+                    "queries",
+                    &args.common.algo,
+                    RpqMatrixOptimizer::Stochastic,
+                    &config
+                )
+                .is_err()
+        );
+    }
 }

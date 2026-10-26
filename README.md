@@ -176,8 +176,13 @@ Subcommands:
 | `-q`, `--queries <FILE>` | Queries file (see format below). |
 | `-a`, `--algo <nfarpq\|rpqmatrix>` | Algorithm(s). Repeat to run several. |
 | `-b`, `--base-iri [<IRI>]` | Optional `BASE <iri>` to prepend to each query. Bare `--base-iri` uses `http://example.org/`. |
-| `-p`, `--rpqmatrix-optimizer <NAME>` | RPQMatrix optimizer: `none`, `join`, `metaac`, `mnc`, `hybrid`, `pang-hybrid`, or `sampling`. |
+| `-p`, `--rpqmatrix-optimizer <NAME>` | RPQMatrix optimizer: `none`, `join`, `metaac`, `mnc`, `hybrid`, `pang-hybrid`, `sampling`, or `stochastic`. |
 
+`stochastic` uses frozen ordinary linear regression to search all
+parenthesizations of up to 10 matrix factors, including fixed endpoint selectors.
+Train explicitly with `train-linear -g GRAPH -q TRAIN -o model.txt`, then pass
+`--linear-model model.txt` to `query` or `bench`. See
+[model, training, and reuse](docs/stochastic_optimizer.md).
 
 `query` adds `-o, --output <FILE>` to write JSON.
 

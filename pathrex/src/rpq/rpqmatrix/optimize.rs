@@ -7,9 +7,11 @@ use std::{
 use super::cost::{
     HybridCostFn, JoinCostFn, MetaAcCostFn, MncCostFn, PangHybridCostFn, SamplingCostFn,
 };
+use super::learning::LinearCostModel;
 use super::plan::{RpqPlan, make_rules};
 use super::sampling::SamplingConfig;
 use super::stats::LabelCountVectors;
+use super::stochastic::{candidates, select_plan};
 use crate::{
     graph::{GraphDecomposition, LagraphGraph},
     rpq::RpqError,
@@ -26,6 +28,7 @@ pub enum OptimizationStrategy {
     Hybrid,
     PangHybrid,
     Sampling,
+    Stochastic,
     RandomOpt, // TODO: should be same as random from la-n-egg-rpq: https://github.com/SparseLinearAlgebra/la-n-egg-rpq/blob/main/src/main.rs#L75
     Simple,    // TODO
     Wander,    // TODO
@@ -46,6 +49,7 @@ pub(super) trait RpqOptimizer {
 pub(super) struct EGraphOptimizer {
     strategy: OptimizationStrategy,
     cache: Mutex<OptimizerCache>,
+    linear_model: Option<LinearCostModel>,
 }
 
 impl EGraphOptimizer {
@@ -53,6 +57,7 @@ impl EGraphOptimizer {
         Self {
             strategy,
             cache: Mutex::default(),
+            linear_model: None,
         }
     }
 
@@ -154,6 +159,24 @@ impl EGraphOptimizer {
             SamplingCostFn::new(graph.num_nodes() as f64, matrices, vertices, config),
         ))
     }
+
+    pub(super) fn with_linear_model(model: LinearCostModel) -> Self {
+        Self {
+            strategy: OptimizationStrategy::Stochastic,
+            cache: Mutex::default(),
+            linear_model: Some(model),
+        }
+    }
+
+    fn optimize_expr_stochastic(
+        &self,
+        expr: RecExpr<RpqPlan>,
+        n: usize,
+    ) -> Result<RecExpr<RpqPlan>, RpqError> {
+        let model = self.linear_model.as_ref().ok_or_else(|| RpqError::UnsupportedPath(
+            "linear regression requires a trained model; use RpqMatrixEvaluator::with_linear_model or --linear-model".into()))?;
+        Ok(select_plan(candidates(expr, n)?, model))
+    }
 }
 
 impl RpqOptimizer for EGraphOptimizer {
@@ -172,6 +195,9 @@ impl RpqOptimizer for EGraphOptimizer {
                 Ok(self.optimize_expr_pang_hybrid(expr, graph.num_nodes()))
             }
             OptimizationStrategy::Sampling => self.optimize_expr_sampling(expr, graph),
+            OptimizationStrategy::Stochastic => {
+                self.optimize_expr_stochastic(expr, graph.num_nodes())
+            }
             OptimizationStrategy::RandomOpt
             | OptimizationStrategy::Simple
             | OptimizationStrategy::Wander => Err(RpqError::UnsupportedPath(format!(

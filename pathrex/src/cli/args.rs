@@ -31,6 +31,8 @@ pub enum Commands {
     Query(QueryArgs),
     /// Benchmark RPQ evaluators
     Bench(BenchArgs),
+    /// Fit a frozen linear cost model using all parenthesizations of short label sequences
+    TrainLinear(TrainLinearArgs),
 }
 
 /// Arguments shared by both subcommands.
@@ -73,6 +75,30 @@ pub struct CommonArgs {
         default_value_t = RpqMatrixOptimizer::None
     )]
     pub rpqmatrix_optimizer: RpqMatrixOptimizer,
+
+    /// Trained model file for --rpqmatrix-optimizer stochastic.
+    #[arg(long)]
+    pub linear_model: Option<String>,
+}
+
+/// Explicit offline calibration; ordinary query/bench execution never trains.
+#[derive(Args, Debug)]
+pub struct TrainLinearArgs {
+    /// MatrixMarket graph directory.
+    #[arg(short = 'g', long)]
+    pub graph: String,
+    /// Training queries file; at most 10 matrix factors, including fixed endpoint selectors.
+    #[arg(short = 'q', long)]
+    pub queries: String,
+    #[arg(short = 'b', long, num_args = 0..=1, default_missing_value = "http://example.org/")]
+    pub base_iri: Option<String>,
+    /// Output file for the three fitted coefficients.
+    #[arg(short = 'o', long)]
+    pub output: String,
+    #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(u32).range(1..))]
+    pub runs: u32,
+    #[arg(long, default_value_t = 1)]
+    pub warm_up_runs: u32,
 }
 
 /// Arguments for the `query` subcommand.
@@ -256,6 +282,8 @@ pub enum RpqMatrixOptimizer {
     /// GraphBLAS induced-subgraph sampling estimator for composed expressions.
     #[value(name = "sampling")]
     Sampling,
+    /// Exhaustive parenthesization search for up to 10 matrix factors using frozen linear regression; requires --linear-model.
+    Stochastic,
     /// Without any optimizations.
     #[default]
     None,
@@ -270,6 +298,7 @@ impl std::fmt::Display for RpqMatrixOptimizer {
             RpqMatrixOptimizer::Hybrid => write!(f, "hybrid"),
             RpqMatrixOptimizer::PangHybrid => write!(f, "pang-hybrid"),
             RpqMatrixOptimizer::Sampling => write!(f, "sampling"),
+            RpqMatrixOptimizer::Stochastic => write!(f, "stochastic"),
             RpqMatrixOptimizer::None => write!(f, "none"),
         }
     }
@@ -285,6 +314,7 @@ impl From<RpqMatrixOptimizer> for OptimizationStrategy {
             RpqMatrixOptimizer::Hybrid => OptimizationStrategy::Hybrid,
             RpqMatrixOptimizer::PangHybrid => OptimizationStrategy::PangHybrid,
             RpqMatrixOptimizer::Sampling => OptimizationStrategy::Sampling,
+            RpqMatrixOptimizer::Stochastic => OptimizationStrategy::Stochastic,
         }
     }
 }
@@ -293,6 +323,58 @@ impl From<RpqMatrixOptimizer> for OptimizationStrategy {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn linear_training_is_explicit_and_accepts_no_optimizer_settings() {
+        let cli = Cli::parse_from([
+            "pathrex",
+            "train-linear",
+            "-g",
+            "graph",
+            "-q",
+            "training.txt",
+            "-o",
+            "model.txt",
+        ]);
+        let Commands::TrainLinear(args) = cli.command else {
+            panic!("expected train-linear");
+        };
+        assert_eq!(args.runs, 3);
+        assert_eq!(args.warm_up_runs, 1);
+        assert!(
+            Cli::try_parse_from([
+                "pathrex",
+                "train-linear",
+                "-g",
+                "graph",
+                "-q",
+                "training.txt",
+                "-o",
+                "model.txt",
+                "--runs",
+                "0"
+            ])
+            .is_err()
+        );
+        let cli = Cli::parse_from([
+            "pathrex",
+            "query",
+            "-g",
+            "graph",
+            "-q",
+            "test.txt",
+            "-a",
+            "rpqmatrix",
+            "-p",
+            "stochastic",
+            "--linear-model",
+            "model.txt",
+        ]);
+        let Commands::Query(args) = cli.command else {
+            panic!("expected query");
+        };
+        assert_eq!(args.common.linear_model.as_deref(), Some("model.txt"));
+    }
 
     #[test]
     fn query_requires_at_least_one_algo() {
@@ -374,6 +456,7 @@ mod tests {
         for (name, expected) in [
             ("pang-hybrid", RpqMatrixOptimizer::PangHybrid),
             ("sampling", RpqMatrixOptimizer::Sampling),
+            ("stochastic", RpqMatrixOptimizer::Stochastic),
         ] {
             let cli = Cli::parse_from([
                 "pathrex",

@@ -217,7 +217,7 @@ pub(super) struct MetaAcCostFn {
     pub lr_multiplier: f64,
 }
 
-fn metaac_matmul_nnz(lhs_nnz: f64, rhs_nnz: f64, n: f64) -> f64 {
+pub(super) fn metaac_matmul_nnz(lhs_nnz: f64, rhs_nnz: f64, n: f64) -> f64 {
     let output_cells = (n * n).max(1.0);
     let p = ((lhs_nnz / output_cells) * (rhs_nnz / output_cells)).clamp(0.0, 1.0);
     (-output_cells * (n * (-p).ln_1p()).exp_m1()).clamp(0.0, output_cells)

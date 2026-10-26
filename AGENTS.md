@@ -36,6 +36,8 @@ RPQ_bench repository.
 │   │   │       ├── optimize.rs   # Strategy selection, EGraphOptimizer, extraction
 │   │   │       ├── cost.rs       # Cost models
 │   │   │       ├── sampling.rs   # Induced-subgraph sampling
+│   │   │       ├── learning.rs   # Batch ordinary least squares and frozen model persistence
+│   │   │       ├── stochastic.rs # Linear plan features and exhaustive parenthesization search
 │   │   │       ├── stats.rs      # Count-vector statistics
 │   │   │       └── result.rs     # PreparedRpqMatrix and execution results
 │   │   ├── sparql/mod.rs         # SPARQL to RpqQuery
@@ -368,7 +370,7 @@ former `rpqmatrix.rs` file. Its pipeline is:
    closure. One-or-more is translated to a sequence with star.
    Zero-or-one is currently rejected by RPQMatrix.
 3. [`EGraphOptimizer`](pathrex/src/rpq/rpqmatrix/optimize.rs) implements the
-   internal `RpqOptimizer` interface. Except for `NoOpt`, it expands equivalent
+   internal `RpqOptimizer` interface. Except for `NoOpt` and `Stochastic`, it expands equivalent
    expressions with `egg::Runner` and the rules in
    [`plan.rs`](pathrex/src/rpq/rpqmatrix/plan.rs), then selects an expression
    with `egg::Extractor` and a cost model from
@@ -405,10 +407,21 @@ reports the number of distinct reachable targets (nonempty columns), not the
 pair count.
 
 The implemented CLI strategies are `none`, `join`, `metaac`, `mnc`,
-`hybrid`, `pang-hybrid`, and `sampling`. `RandomOpt`, `Simple`, and
+`hybrid`, `pang-hybrid`, `sampling`, and `stochastic`. `RandomOpt`, `Simple`, and
 `Wander` remain unsupported internal enum variants. Sampling evaluates
 induced-subgraph matrices for estimates; the final selected plan executes on
 the full graph.
+
+`stochastic` uses frozen ordinary least squares on full-plan time with features
+`[1, summed multiplication work, summed operand nnz]`. It supports label
+sequences and fixed endpoints; unions and closures are outside this experiment.
+It enumerates all binary parenthesizations of up to 10 ordered matrix factors,
+including endpoint selectors. Longer chains are rejected. Hybrid/MetaAC supplies
+feature statistics only; other cost functions do not generate its candidates.
+The canonical original plan is retained on prediction ties or invalid predictions.
+`train-linear` explicitly collects observations and saves coefficients;
+`query`/`bench` load them with `--linear-model` and never update them. Execution
+uses the ordinary native path. See [model and training](docs/stochastic_optimizer.md).
 
 Fixed-object and fixed-subject/object behavior is covered by
 [`pathrex/tests/rpqmatrix_tests.rs`](pathrex/tests/rpqmatrix_tests.rs);

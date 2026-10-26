@@ -31,7 +31,7 @@ use thiserror::Error;
 
 use pathrex::cli::args::{
     Algo, BenchArgs, BenchMode, Cli, Commands, CommonArgs, GraphFormat, QueryArgs,
-    RpqMatrixOptimizer,
+    RpqMatrixOptimizer, TrainLinearArgs,
 };
 use pathrex::cli::bench::BenchError;
 use pathrex::cli::checkpoint::{BenchRunConfig, Checkpoint, CheckpointError, Checkpointer};
@@ -39,9 +39,19 @@ use pathrex::cli::dispatch::{dispatch_bench, dispatch_query};
 use pathrex::cli::loader::{GraphLoadError, LoadedQuery, load_graph_with_optimizer, load_queries};
 use pathrex::cli::output::{BenchMetadata, BenchOutput, QueryMetadata, QueryOutput};
 use pathrex::graph::{GraphDecomposition, InMemoryGraph};
+use pathrex::rpq::RpqError;
+use pathrex::rpq::rpqmatrix::{LinearCostModel, LinearModelError, RpqMatrixEvaluator};
 
 #[derive(Debug, Error)]
 enum MainError {
+    #[error(transparent)]
+    LinearModel(#[from] LinearModelError),
+    #[error("training query {id}: {source}")]
+    Training {
+        id: String,
+        #[source]
+        source: RpqError,
+    },
     #[error(transparent)]
     Graph(#[from] GraphLoadError),
     #[error("error loading queries from '{path}': {source}")]
@@ -82,10 +92,18 @@ fn run() -> Result<(), MainError> {
     match cli.command {
         Commands::Query(args) => run_query_cmd(args),
         Commands::Bench(args) => run_bench_cmd(args),
+        Commands::TrainLinear(args) => run_train_linear_cmd(args),
     }
 }
 
 fn validate_common_args(common: &CommonArgs) -> Result<(), MainError> {
+    let linear = common.rpqmatrix_optimizer == RpqMatrixOptimizer::Stochastic;
+    if linear != common.linear_model.is_some() {
+        return Err(MainError::InvalidArgs(
+            "--linear-model must be supplied exactly when --rpqmatrix-optimizer is stochastic"
+                .into(),
+        ));
+    }
     if common.rpqmatrix_optimizer == RpqMatrixOptimizer::None {
         return Ok(());
     }
@@ -103,6 +121,16 @@ fn validate_common_args(common: &CommonArgs) -> Result<(), MainError> {
     }
 
     Ok(())
+}
+
+// Load once: execution, checkpoint identity, and output refer to this same
+// immutable snapshot even if the source file changes while queries run.
+fn load_linear_model(common: &CommonArgs) -> Result<Option<LinearCostModel>, MainError> {
+    common
+        .linear_model
+        .as_ref()
+        .map(|path| LinearCostModel::load(path).map_err(MainError::from))
+        .transpose()
 }
 
 fn validate_bench_args(args: &BenchArgs) -> Result<(), MainError> {
@@ -164,6 +192,7 @@ fn load_query_file(path: &str, base_iri: Option<&str>) -> Result<Vec<LoadedQuery
 fn run_query_cmd(args: QueryArgs) -> Result<(), MainError> {
     let common = &args.common;
     validate_common_args(common)?;
+    let model = load_linear_model(common)?;
 
     eprintln!("=== pathrex query ===");
     eprintln!("Graph:   {}", common.graph);
@@ -188,7 +217,7 @@ fn run_query_cmd(args: QueryArgs) -> Result<(), MainError> {
     let queries = load_query_file(&common.queries, common.base_iri.as_deref())?;
     eprintln!("  loaded {} queries", queries.len());
 
-    let results = dispatch_query(&args, &graph, &queries);
+    let results = dispatch_query(&args, &graph, &queries, model.as_ref())?;
 
     let errors = results
         .iter()
@@ -210,6 +239,7 @@ fn run_query_cmd(args: QueryArgs) -> Result<(), MainError> {
                 graph_format: common.format.to_string(),
                 queries_file: common.queries.clone(),
                 rpqmatrix_optimizer: Some(common.rpqmatrix_optimizer.to_string()),
+                linear_model_coefficients: model.as_ref().map(|m| m.coefficients()),
                 base_iri: common.base_iri.clone(),
                 num_nodes: graph.num_nodes(),
                 num_labels: graph.num_labels(),
@@ -228,9 +258,13 @@ fn run_query_cmd(args: QueryArgs) -> Result<(), MainError> {
     Ok(())
 }
 
-fn build_checkpointer(args: &BenchArgs, queries_len: usize) -> Result<Checkpointer, MainError> {
+fn build_checkpointer(
+    args: &BenchArgs,
+    queries_len: usize,
+    model: Option<&LinearCostModel>,
+) -> Result<Checkpointer, MainError> {
     let common = &args.common;
-    let bench_config = BenchRunConfig::from_args(args);
+    let bench_config = BenchRunConfig::from_args(args, model);
 
     if let Some(checkpoint) = &args.checkpoint {
         let path = PathBuf::from(checkpoint);
@@ -289,6 +323,7 @@ fn build_checkpointer(args: &BenchArgs, queries_len: usize) -> Result<Checkpoint
 fn run_bench_cmd(args: BenchArgs) -> Result<(), MainError> {
     let common = &args.common;
     validate_bench_args(&args)?;
+    let model = load_linear_model(common)?;
 
     eprintln!("=== pathrex bench ===");
     eprintln!("Graph:      {}", common.graph);
@@ -321,12 +356,12 @@ fn run_bench_cmd(args: BenchArgs) -> Result<(), MainError> {
     eprintln!();
 
     eprintln!("[3/4] Setting up checkpoint...");
-    let mut checkpointer = build_checkpointer(&args, queries.len())?;
+    let mut checkpointer = build_checkpointer(&args, queries.len(), model.as_ref())?;
     eprintln!();
 
     eprintln!("[4/4] Running benchmarks...");
     eprintln!();
-    let results = dispatch_bench(&args, &graph, &queries, &mut checkpointer)?;
+    let results = dispatch_bench(&args, &graph, &queries, &mut checkpointer, model.as_ref())?;
 
     let output = BenchOutput {
         metadata: BenchMetadata {
@@ -336,6 +371,7 @@ fn run_bench_cmd(args: BenchArgs) -> Result<(), MainError> {
             queries_file: common.queries.clone(),
             base_iri: common.base_iri.clone(),
             rpqmatrix_optimizer: Some(common.rpqmatrix_optimizer.to_string()),
+            linear_model_coefficients: model.as_ref().map(|m| m.coefficients()),
             num_nodes: graph.num_nodes(),
             num_labels: graph.num_labels(),
             bench_mode: args.bench_mode.to_string(),
@@ -375,4 +411,78 @@ fn run_bench_cmd(args: BenchArgs) -> Result<(), MainError> {
     }
 
     Ok(())
+}
+
+fn run_train_linear_cmd(args: TrainLinearArgs) -> Result<(), MainError> {
+    let graph = load_graph_with_optimizer(
+        &args.graph,
+        GraphFormat::Mm,
+        args.base_iri.as_deref(),
+        RpqMatrixOptimizer::None,
+    )?;
+    let queries = load_query_file(&args.queries, args.base_iri.as_deref())?;
+    let mut observations = Vec::new();
+    for loaded in queries {
+        let query = loaded.parsed.map_err(|source| MainError::Training {
+            id: loaded.id.clone(),
+            source,
+        })?;
+        let samples = RpqMatrixEvaluator::collect_linear_observations(
+            &query,
+            &graph,
+            args.runs as usize,
+            args.warm_up_runs as usize,
+        )
+        .map_err(|source| MainError::Training {
+            id: loaded.id.clone(),
+            source,
+        })?;
+        eprintln!("[train] query={} observations={}", loaded.id, samples.len());
+        observations.extend(samples);
+    }
+    let model = LinearCostModel::fit(&observations)?;
+    model.save(&args.output)?;
+    eprintln!(
+        "Fitted {} observations; coefficients={:?}",
+        observations.len(),
+        model.coefficients()
+    );
+    eprintln!("Frozen model written to {}", args.output);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frozen_regression_requires_a_model_and_other_strategies_reject_it() {
+        for (optimizer, path, valid) in [
+            ("stochastic", None, false),
+            ("stochastic", Some("model.txt"), true),
+            ("hybrid", Some("model.txt"), false),
+            ("none", Some("model.txt"), false),
+            ("hybrid", None, true),
+        ] {
+            let mut arguments = vec![
+                "pathrex",
+                "query",
+                "-g",
+                "graph",
+                "-q",
+                "queries",
+                "-a",
+                "rpqmatrix",
+                "-p",
+                optimizer,
+            ];
+            if let Some(path) = path {
+                arguments.extend(["--linear-model", path]);
+            }
+            let Commands::Query(args) = Cli::parse_from(arguments).command else {
+                panic!("expected query");
+            };
+            assert_eq!(validate_common_args(&args.common).is_ok(), valid);
+        }
+    }
 }

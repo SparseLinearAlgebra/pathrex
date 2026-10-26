@@ -6,6 +6,8 @@ use crate::cli::checkpoint::CheckpointError;
 
 #[derive(Debug, Error)]
 pub enum BenchError {
+    #[error(transparent)]
+    LinearModel(#[from] crate::rpq::rpqmatrix::LinearModelError),
     #[error("criterion estimates missing for group '{0}' (file not found or unreadable)")]
     MissingEstimates(String),
 

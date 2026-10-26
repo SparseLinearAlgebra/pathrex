@@ -1,9 +1,8 @@
-use std::ptr::null_mut;
-
 use crate::eval::{PreparedEvaluator, ResultCount};
 use crate::graph::wrappers::ReduceType::ByCols;
 use crate::graph::{GraphError, GraphblasMatrix, MatrixStorage, set_global_matrix_storage_hint};
 use crate::lagraph_sys::*;
+use std::ptr::null_mut;
 
 use crate::rpq::RpqError;
 use crate::{grb_ok, la_ok};
@@ -43,6 +42,24 @@ pub struct PreparedRpqMatrix {
     pub(super) storage: MatrixStorage,
 }
 
+impl PreparedRpqMatrix {
+    // Walk the flat plan exactly once. A shared RecExpr node owns one result;
+    // recursive destruction is unnecessary and repeats work on shared nodes.
+    fn clear_results(&mut self) -> Result<(), RpqError> {
+        let mut error = None;
+        for plan in &mut self.plans {
+            if !plan.res_mat.is_null() && plan.res_mat != plan.mat {
+                if let Err(e) = unsafe { grb_ok!(LAGraph_RPQMatrix_Free(&mut plan.res_mat)) } {
+                    error.get_or_insert(e);
+                }
+            } else {
+                plan.res_mat = null_mut();
+            }
+        }
+        error.map_or(Ok(()), |e| Err(e.into()))
+    }
+}
+
 impl PreparedEvaluator for PreparedRpqMatrix {
     type Result = RpqMatrixResult;
     type Error = RpqError;
@@ -72,6 +89,7 @@ impl PreparedEvaluator for PreparedRpqMatrix {
 
 impl Drop for PreparedRpqMatrix {
     fn drop(&mut self) {
+        let _ = self.clear_results();
         for mat in &mut self.owned_matrices {
             unsafe {
                 LAGraph_RPQMatrix_Free(mat);

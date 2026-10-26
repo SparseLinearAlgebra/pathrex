@@ -101,6 +101,8 @@ pub struct QueryMetadata {
     pub queries_file: String,
     pub rpqmatrix_optimizer: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub linear_model_coefficients: Option<[f64; 3]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub base_iri: Option<String>,
     pub num_nodes: usize,
     pub num_labels: usize,
@@ -126,6 +128,8 @@ pub struct BenchMetadata {
     pub graph_format: String,
     pub queries_file: String,
     pub rpqmatrix_optimizer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub linear_model_coefficients: Option<[f64; 3]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_iri: Option<String>,
     pub num_nodes: usize,
@@ -302,6 +306,7 @@ mod tests {
                 graph_format: "mm".into(),
                 queries_file: "queries".into(),
                 rpqmatrix_optimizer: Some("none".into()),
+                linear_model_coefficients: None,
                 base_iri: None,
                 num_nodes: 0,
                 num_labels: 0,
@@ -325,6 +330,7 @@ mod tests {
                 graph_format: "mm".into(),
                 queries_file: "queries".into(),
                 rpqmatrix_optimizer: Some("none".into()),
+                linear_model_coefficients: Some([1.0, 2.0, 3.0]),
                 base_iri: None,
                 num_nodes: 0,
                 num_labels: 0,
@@ -372,6 +378,11 @@ mod tests {
             .expect("samples path");
         let samples_json = fs::read_to_string(samples_path).expect("read samples");
         let value: serde_json::Value = serde_json::from_str(&samples_json).expect("json");
+
+        assert_eq!(
+            value["metadata"]["linear_model_coefficients"],
+            serde_json::json!([1.0, 2.0, 3.0])
+        );
 
         assert_eq!(
             value["results"][0]["algorithms"]["rpqmatrix"]["total_ns"][0],
