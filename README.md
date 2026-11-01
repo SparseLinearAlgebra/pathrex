@@ -96,6 +96,8 @@ checked-in bindings without regenerating them.
 - **Two RPQ evaluators** out of the box:
   - `nfarpq` —  runs `LAGraph_RegularPathQuery`.
   - `rpqmatrix` —  runs `LAGraph_RPQMatrix`.
+- **Native RPQMatrix closures**: `A*` is reflexive transitive closure; `A+` is
+  non-reflexive transitive closure, retaining pairs reachable through cycles.
 - **Multiple input formats**: MatrixMarket directories, CSV edge lists, and
   RDF (Turtle / N-Triples).
 - **SPARQL frontend**: parses `SELECT` queries with a single triple/property-path

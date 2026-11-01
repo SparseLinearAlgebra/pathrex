@@ -133,6 +133,66 @@ fn matrix_entry_set(result: &RpqMatrixResult, row: GrB_Index, col: GrB_Index) ->
     }
 }
 
+#[test]
+fn nested_star_sequence_rewrites_preserve_pairs_and_fixed_endpoints() {
+    for edges in [
+        vec![("0", "1", "b"), ("1", "2", "a"), ("3", "3", "unused")],
+        vec![
+            ("0", "1", "b"),
+            ("1", "2", "a"),
+            ("2", "0", "a"),
+            ("1", "1", "b"),
+            ("3", "3", "unused"),
+        ],
+    ] {
+        let graph = build_graph(&edges);
+        let sequence = PathExpr::Sequence(
+            Box::new(PathExpr::ZeroOrMore(Box::new(label("a")))),
+            Box::new(PathExpr::ZeroOrMore(Box::new(label("b")))),
+        );
+        let normalized = PathExpr::ZeroOrMore(Box::new(PathExpr::Alternative(
+            Box::new(label("a")),
+            Box::new(label("b")),
+        )));
+        for path in [
+            PathExpr::ZeroOrMore(Box::new(sequence.clone())),
+            PathExpr::OneOrMore(Box::new(sequence)),
+        ] {
+            for (subject, object) in [
+                (var("x"), var("y")),
+                (named_ep("0"), var("y")),
+                (var("x"), named_ep("2")),
+                (named_ep("0"), named_ep("2")),
+                (named_ep("3"), named_ep("3")),
+                (named_ep("3"), named_ep("2")),
+            ] {
+                let query = rq(subject.clone(), path.clone(), object.clone());
+                let expected = RpqMatrixEvaluator::unoptimized()
+                    .evaluate(&query, &graph)
+                    .unwrap();
+                let normalized_result = RpqMatrixEvaluator::unoptimized()
+                    .evaluate(&rq(subject, normalized.clone(), object), &graph)
+                    .unwrap();
+                let optimized = RpqMatrixEvaluator::optimized(PangHybrid)
+                    .evaluate(&query, &graph)
+                    .unwrap();
+                for actual in [&normalized_result, &optimized] {
+                    assert_eq!(actual.nnz, expected.nnz, "{query:?}");
+                    for row in 0..graph.num_nodes() as GrB_Index {
+                        for col in 0..graph.num_nodes() as GrB_Index {
+                            assert_eq!(
+                                matrix_entry_set(actual, row, col),
+                                matrix_entry_set(&expected, row, col),
+                                "{query:?}, pair ({row}, {col})"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn evaluate_default_and_pang_hybrid(
     graph: &InMemoryGraph,
     query: &RpqQuery,

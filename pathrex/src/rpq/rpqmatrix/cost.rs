@@ -186,6 +186,7 @@ impl PangHybridCostFn {
         seed: PangHybridEstimate,
         left: bool,
         single: bool,
+        reflexive: bool,
     ) -> PangHybridEstimate {
         if body.identity {
             if single {
@@ -246,7 +247,7 @@ impl PangHybridCostFn {
                 }
             }
         }
-        if single {
+        if single && reflexive {
             let plus = result.estimate.nnz;
             result.estimate.nnz = (plus + self.n).min(self.n * self.n);
             score += self.n + plus + result.estimate.nnz;
@@ -284,10 +285,19 @@ impl CostFunction<RpqPlan> for PangHybridCostFn {
             }
             RpqPlan::Star([a]) => {
                 let a = costs(*a);
-                self.closure(a.clone(), a, false, true)
+                self.closure(a.clone(), a, false, true, true)
             }
-            RpqPlan::LStar([a, b]) => self.closure(costs(*a), costs(*b), true, false),
-            RpqPlan::RStar([a, b]) => self.closure(costs(*b), costs(*a), false, false),
+            RpqPlan::Plus([a]) => {
+                let a = costs(*a);
+                let mut out = self.closure(a.clone(), a.clone(), false, true, false);
+                // Native plus duplicates its input instead of creating I.
+                if !a.identity {
+                    out.estimate.score += a.estimate.nnz;
+                }
+                out
+            }
+            RpqPlan::LStar([a, b]) => self.closure(costs(*a), costs(*b), true, false, false),
+            RpqPlan::RStar([a, b]) => self.closure(costs(*b), costs(*a), false, false, false),
         }
     }
 }
@@ -295,6 +305,28 @@ impl CostFunction<RpqPlan> for PangHybridCostFn {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plus_estimates_do_not_add_empty_paths() {
+        let mut model = PangHybridCostFn::new(100.0);
+        for nnz in [0, 1] {
+            let body = model.label(&LabelMeta {
+                name: "p".into(),
+                nvals: nnz,
+                nonzero_rows: nnz,
+                nonzero_cols: nnz,
+            });
+            let plus = model.cost(&RpqPlan::Plus([Id::from(0)]), |_| body.clone());
+            let star = model.cost(&RpqPlan::Star([Id::from(0)]), |_| body.clone());
+            assert_eq!(plus.estimate.nnz, nnz as f64);
+            assert_eq!(plus.estimate.rows, nnz as f64);
+            assert_eq!(plus.estimate.cols, nnz as f64);
+            assert!(!plus.identity);
+            assert!(star.estimate.nnz >= 100.0);
+            assert_eq!(star.estimate.rows, 100.0);
+            assert_eq!(star.estimate.cols, 100.0);
+        }
+    }
 
     #[test]
     fn pang_hybrid_star_steps_follow_growth() {
@@ -333,9 +365,9 @@ mod tests {
             },
             identity: false,
         };
-        let identity = model.closure(empty.clone(), empty, false, true);
+        let identity = model.closure(empty.clone(), empty, false, true, true);
         let union = model.alternate(&identity, &identity);
-        let nested_star = model.closure(identity.clone(), identity, false, true);
+        let nested_star = model.closure(identity.clone(), identity, false, true, true);
         for result in [union, nested_star.clone()] {
             assert!(result.identity);
             assert_eq!(result.estimate.nnz, 4.0);
@@ -352,8 +384,8 @@ mod tests {
             },
             identity: false,
         };
-        let left = model.closure(nested_star.clone(), operand.clone(), true, false);
-        let right = model.closure(nested_star, operand.clone(), false, false);
+        let left = model.closure(nested_star.clone(), operand.clone(), true, false, false);
+        let right = model.closure(nested_star, operand.clone(), false, false, false);
         for result in [left, right] {
             assert!(!result.identity);
             assert_eq!(result.estimate.nnz, operand.estimate.nnz);

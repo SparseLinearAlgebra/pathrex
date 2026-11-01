@@ -85,6 +85,57 @@ mod tests {
     use super::*;
 
     #[test]
+    fn shared_rules_expose_collapsed_closures_in_all_endpoint_contexts() {
+        let star = "(* (/ (* 1) (* 2)))";
+        let plus = "(+ (/ (* 1) (* 2)))";
+        for body in [star, plus] {
+            for (source, target) in [
+                (body.to_string(), "(* (| 1 2))".to_string()),
+                (format!("(/ {body} dst)"), "(/ (* (| 1 2)) dst)".into()),
+                (format!("(/ src {body})"), "(/ src (* (| 1 2)))".into()),
+                (
+                    format!("(/ (/ src {body}) dst)"),
+                    "(/ (/ src (* (| 1 2))) dst)".into(),
+                ),
+            ] {
+                let expr = source.parse().unwrap();
+                let runner = EGraphOptimizer::runner(&expr);
+                assert!(
+                    matches!(runner.stop_reason, Some(egg::StopReason::Saturated)),
+                    "{source}: {:?}",
+                    runner.stop_reason
+                );
+                assert!(runner.egraph.total_size() < 100, "{source}");
+                let target: RecExpr<RpqPlan> = target.parse().unwrap();
+                let target_id = runner
+                    .egraph
+                    .lookup_expr(&target)
+                    .unwrap_or_else(|| panic!("collapsed candidate missing for {source}"));
+                assert_eq!(
+                    runner.egraph.find(runner.roots[0]),
+                    runner.egraph.find(target_id),
+                    "{source}"
+                );
+                eprintln!(
+                    "{source}: {} nodes, {:?}",
+                    runner.egraph.total_size(),
+                    runner.stop_reason
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn shared_rules_do_not_collapse_a_sequence_without_outer_closure() {
+        let expr = "(/ (* 1) (* 2))".parse().unwrap();
+        let runner = EGraphOptimizer::runner(&expr);
+        let forbidden: RecExpr<RpqPlan> = "(* (| 1 2))".parse().unwrap();
+        if let Some(id) = runner.egraph.lookup_expr(&forbidden) {
+            assert_ne!(runner.egraph.find(runner.roots[0]), runner.egraph.find(id));
+        }
+    }
+
+    #[test]
     fn no_opt_preserves_the_input_expression() {
         let graph = crate::utils::build_graph(&[("a", "b", "p")]);
         let expr: RecExpr<RpqPlan> = "(/ 1 2)".parse().unwrap();

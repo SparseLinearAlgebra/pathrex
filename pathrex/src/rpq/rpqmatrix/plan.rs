@@ -36,6 +36,7 @@ define_language! {
         "/" = Seq([Id; 2]),
         "|" = Alt([Id; 2]),
         "*" = Star([Id; 1]),
+        "+" = Plus([Id; 1]),
         "l*" = LStar([Id; 2]),
         "*r" = RStar([Id; 2]),
     }
@@ -43,6 +44,12 @@ define_language! {
 
 pub(super) fn make_rules() -> Vec<egg::Rewrite<RpqPlan, ()>> {
     vec![
+        // A and B may be arbitrary relations. The outer closure is essential:
+        // A* B* alone does not allow a B path followed by an A path.
+        rewrite!("collapse-starred-sequence-star";
+            "(* (/ (* ?a) (* ?b)))" => "(* (| ?a ?b))"),
+        rewrite!("collapse-starred-sequence-plus";
+            "(+ (/ (* ?a) (* ?b)))" => "(* (| ?a ?b))"),
         rewrite!("assoc-sec-1"; "(/ ?a (/ ?b ?c))" => "(/ (/ ?a ?b) ?c)"),
         rewrite!("assoc-sec-2"; "(/ (/ ?a ?b) ?c)" => "(/ ?a (/ ?b ?c))"),
         rewrite!("assoc-alt"; "(| ?a (| ?b ?c))" => "(| (| ?a ?b) ?c)"),

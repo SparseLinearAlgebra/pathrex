@@ -361,7 +361,8 @@ former `rpqmatrix.rs` file. Its pipeline is:
 2. [`query_to_expr`](pathrex/src/rpq/rpqmatrix/expr.rs) builds a
    `RecExpr<RpqPlan>`. A label is a Boolean adjacency matrix; sequence is
    Boolean multiplication; alternative is union; star is reflexive transitive
-   closure. One-or-more is translated to a sequence with star.
+   closure. One-or-more is represented by a distinct `Plus` node and native
+   non-reflexive transitive-closure operation; it is not lowered to a sequence with star.
    Zero-or-one is currently rejected by RPQMatrix.
 3. [`EGraphOptimizer`](pathrex/src/rpq/rpqmatrix/optimize.rs) implements the
    internal `RpqOptimizer` interface. Except for `NoOpt`, it expands equivalent

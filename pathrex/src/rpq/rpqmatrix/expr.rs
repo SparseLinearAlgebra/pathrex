@@ -55,8 +55,7 @@ fn to_expr_aux<G: GraphDecomposition>(
 
         PathExpr::OneOrMore(inner) => {
             let e = to_expr_aux(inner, expr, graph)?;
-            let s = expr.add(RpqPlan::Star([e]));
-            Ok(expr.add(RpqPlan::Seq([e, s])))
+            Ok(expr.add(RpqPlan::Plus([e])))
         }
 
         PathExpr::ZeroOrOne(_) => Err(RpqError::UnsupportedPath(
@@ -179,6 +178,14 @@ pub fn materialize_with_storage<G: GraphDecomposition>(
                 res_mat: null_mut(),
             },
 
+            RpqPlan::Plus([i]) => RPQMatrixPlan {
+                op: RPQMatrixOp::RPQ_MATRIX_OP_KLEENE_PLUS,
+                lhs: null_mut(),
+                rhs: unsafe { plans.as_mut_ptr().add(usize::from(*i)) },
+                mat: null_mut(),
+                res_mat: null_mut(),
+            },
+
             RpqPlan::LStar([l, r]) => RPQMatrixPlan {
                 op: RPQMatrixOp::RPQ_MATRIX_OP_KLEENE_L,
                 lhs: unsafe { plans.as_mut_ptr().add(usize::from(*l)) },
@@ -204,6 +211,25 @@ pub fn materialize_with_storage<G: GraphDecomposition>(
 mod tests {
     use super::*;
     use crate::utils::build_graph;
+
+    #[test]
+    fn one_or_more_keeps_a_native_plus_node() {
+        let graph = build_graph(&[("a", "b", "p")]);
+        let query = RpqQuery {
+            subject: Endpoint::Variable("x".into()),
+            path: PathExpr::OneOrMore(Box::new(PathExpr::Label("p".into()))),
+            object: Endpoint::Variable("y".into()),
+        };
+        let expr = query_to_expr(&query, &graph).unwrap();
+        assert_eq!(expr.len(), 2);
+        assert!(matches!(expr.as_ref()[1], RpqPlan::Plus([child]) if child == Id::from(0)));
+        let (plans, selectors) =
+            materialize_with_storage(&expr, &graph, MatrixStorage::Csr).unwrap();
+        assert!(selectors.is_empty());
+        assert_eq!(plans[1].op, RPQMatrixOp::RPQ_MATRIX_OP_KLEENE_PLUS);
+        assert!(plans[1].lhs.is_null());
+        assert_eq!(plans[1].rhs.cast_const(), plans.as_ptr());
+    }
 
     #[test]
     fn labels_without_metadata_use_actual_nonempty_rows_and_columns() {

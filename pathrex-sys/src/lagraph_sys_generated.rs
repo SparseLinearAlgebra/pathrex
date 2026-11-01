@@ -313,6 +313,7 @@ pub enum RPQMatrixOp {
     RPQ_MATRIX_OP_KLEENE = 3,
     RPQ_MATRIX_OP_KLEENE_L = 4,
     RPQ_MATRIX_OP_KLEENE_R = 5,
+    RPQ_MATRIX_OP_KLEENE_PLUS = 6,
 }
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
