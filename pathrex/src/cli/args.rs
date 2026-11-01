@@ -240,22 +240,10 @@ impl std::fmt::Display for GraphFormat {
 #[value(rename_all = "lowercase")]
 #[serde(rename_all = "lowercase")]
 pub enum RpqMatrixOptimizer {
-    /// Optimizer based on join of source matrices.
-    Join,
-    /// MetaAC independence estimator.
-    #[value(name = "metaac")]
-    MetaAc,
-    /// Matrix nonzero count estimator.
-    Mnc,
-    /// Join work model with MetaAC result estimates.
-    Hybrid,
     /// Size-based Join estimates with Pang-inspired closures.
     #[value(name = "pang-hybrid")]
     #[serde(rename = "pang-hybrid")]
     PangHybrid,
-    /// GraphBLAS induced-subgraph sampling estimator for composed expressions.
-    #[value(name = "sampling")]
-    Sampling,
     /// Without any optimizations.
     #[default]
     None,
@@ -264,12 +252,7 @@ pub enum RpqMatrixOptimizer {
 impl std::fmt::Display for RpqMatrixOptimizer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RpqMatrixOptimizer::Join => write!(f, "join"),
-            RpqMatrixOptimizer::MetaAc => write!(f, "metaac"),
-            RpqMatrixOptimizer::Mnc => write!(f, "mnc"),
-            RpqMatrixOptimizer::Hybrid => write!(f, "hybrid"),
             RpqMatrixOptimizer::PangHybrid => write!(f, "pang-hybrid"),
-            RpqMatrixOptimizer::Sampling => write!(f, "sampling"),
             RpqMatrixOptimizer::None => write!(f, "none"),
         }
     }
@@ -279,12 +262,7 @@ impl From<RpqMatrixOptimizer> for OptimizationStrategy {
     fn from(value: RpqMatrixOptimizer) -> Self {
         match value {
             RpqMatrixOptimizer::None => OptimizationStrategy::NoOpt,
-            RpqMatrixOptimizer::Join => OptimizationStrategy::Join,
-            RpqMatrixOptimizer::MetaAc => OptimizationStrategy::MetaAc,
-            RpqMatrixOptimizer::Mnc => OptimizationStrategy::Mnc,
-            RpqMatrixOptimizer::Hybrid => OptimizationStrategy::Hybrid,
             RpqMatrixOptimizer::PangHybrid => OptimizationStrategy::PangHybrid,
-            RpqMatrixOptimizer::Sampling => OptimizationStrategy::Sampling,
         }
     }
 }
@@ -370,10 +348,10 @@ mod tests {
     }
 
     #[test]
-    fn new_optimizer_names_are_the_only_supported_names() {
+    fn only_remaining_optimizer_names_are_supported() {
         for (name, expected) in [
             ("pang-hybrid", RpqMatrixOptimizer::PangHybrid),
-            ("sampling", RpqMatrixOptimizer::Sampling),
+            ("none", RpqMatrixOptimizer::None),
         ] {
             let cli = Cli::parse_from([
                 "pathrex",
@@ -393,6 +371,11 @@ mod tests {
             assert_eq!(args.common.rpqmatrix_optimizer, expected);
         }
         for name in [
+            "join",
+            "metaac",
+            "mnc",
+            "hybrid",
+            "sampling",
             "rpq-static",
             "row-sampling",
             "hybrid-static-star",

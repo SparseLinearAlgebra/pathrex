@@ -125,10 +125,6 @@ pub struct LagraphGraph {
 }
 
 impl LagraphGraph {
-    pub(crate) fn matrix(&self) -> GrB_Matrix {
-        unsafe { (*self.inner).A }
-    }
-
     /// Build a `LagraphGraph` from an RAII-wrapped [`GraphblasMatrix`].
     ///
     /// On success, ownership of the underlying `GrB_Matrix` is transferred

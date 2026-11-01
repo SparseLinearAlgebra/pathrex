@@ -35,8 +35,6 @@ RPQ_bench repository.
 │   │   │       ├── plan.rs       # RpqPlan language and rewrite rules
 │   │   │       ├── optimize.rs   # Strategy selection, EGraphOptimizer, extraction
 │   │   │       ├── cost.rs       # Cost models
-│   │   │       ├── sampling.rs   # Induced-subgraph sampling
-│   │   │       ├── stats.rs      # Count-vector statistics
 │   │   │       └── result.rs     # PreparedRpqMatrix and execution results
 │   │   ├── sparql/mod.rs         # SPARQL to RpqQuery
 │   │   ├── formats/              # CSV, MatrixMarket, RDF sources
@@ -175,9 +173,7 @@ into a single graph.
 
 The MatrixMarket loader populates both CSR and CSC matrix stores, along with
 `GraphMetadata` containing a `MatrixMetadata` per label: dimension, nonzero
-count, and numbers of nonempty rows and columns. `MatrixStatsMode::Basic`
-adds row/column count vectors; `Extended` also adds the MNC singleton-related
-vectors. The CLI requests `Extended` for MNC and `None` for other strategies.
+count, and numbers of nonempty rows and columns.
 CSV/RDF loading does not populate these cached statistics or a separate CSC store;
 consumers use matrix/statistics fallbacks when needed.
 
@@ -404,11 +400,11 @@ relation matrix and its pair count `nnz`. Its `ResultCount` implementation
 reports the number of distinct reachable targets (nonempty columns), not the
 pair count.
 
-The implemented CLI strategies are `none`, `join`, `metaac`, `mnc`,
-`hybrid`, `pang-hybrid`, and `sampling`. `RandomOpt`, `Simple`, and
-`Wander` remain unsupported internal enum variants. Sampling evaluates
-induced-subgraph matrices for estimates; the final selected plan executes on
-the full graph.
+The implemented CLI strategies are `none` and `pang-hybrid`. `RandomOpt`,
+`Simple`, and `Wander` remain unsupported internal enum variants. The old
+`join`, `metaac`, `mnc`, `hybrid`, and `sampling` models and their count-vector
+and induced-subgraph helpers have been removed. The selected plan executes
+on the full graph.
 
 Fixed-object and fixed-subject/object behavior is covered by
 [`pathrex/tests/rpqmatrix_tests.rs`](pathrex/tests/rpqmatrix_tests.rs);
@@ -473,7 +469,7 @@ A convenience function is also provided:
   `RpqError::Graph` variant, enabling `?` propagation in evaluators.
 - Raw FFI declarations live in `pathrex-sys`. Native calls also occur in the graph
   wrappers, the in-memory loader, NFA evaluation, and RPQMatrix expression,
-  statistics, sampling, and execution modules. Resource ownership and cleanup
+  cost and execution modules. Resource ownership and cleanup
   must be explicit; prefer the existing RAII wrappers.
 - `unsafe impl Send + Sync` is provided for `LagraphGraph`,
   `GraphblasVector`, and `GraphblasMatrix` because GraphBLAS handles are thread-safe after init.

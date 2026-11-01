@@ -67,36 +67,29 @@ impl Evaluator for RpqMatrixEvaluator {
 mod tests {
     use super::*;
     use crate::formats::MatrixMarket;
-    use crate::graph::{Graph, InMemory, MatrixStatsMode};
+    use crate::graph::{Graph, InMemory};
     use crate::rpq::{Endpoint, PathExpr, RpqQuery};
     use crate::utils::build_graph;
 
     #[test]
-    fn optimizer_specific_matrix_statistics_preserve_results() {
+    fn pang_hybrid_preserves_matrix_market_results() {
         let query = RpqQuery {
             subject: Endpoint::Variable("x".into()),
             path: PathExpr::ZeroOrMore(Box::new(PathExpr::Label("knows".into()))),
             object: Endpoint::Variable("y".into()),
         };
-        for (mode, optimizer) in [
-            (MatrixStatsMode::None, OptimizationStrategy::PangHybrid),
-            (MatrixStatsMode::None, OptimizationStrategy::Sampling),
-            (MatrixStatsMode::Extended, OptimizationStrategy::Mnc),
-        ] {
-            let graph = Graph::<InMemory>::try_from(
-                MatrixMarket::from_dir("tests/testdata/mm_small").with_matrix_stats(mode),
-            )
-            .unwrap();
-            let expected = RpqMatrixEvaluator::unoptimized()
-                .evaluate(&query, &graph)
-                .unwrap()
-                .nnz;
-            let actual = RpqMatrixEvaluator::optimized(optimizer)
-                .evaluate(&query, &graph)
-                .unwrap()
-                .nnz;
-            assert_eq!(actual, expected, "{optimizer:?}");
-        }
+        let optimizer = OptimizationStrategy::PangHybrid;
+        let graph =
+            Graph::<InMemory>::try_from(MatrixMarket::from_dir("tests/testdata/mm_small")).unwrap();
+        let expected = RpqMatrixEvaluator::unoptimized()
+            .evaluate(&query, &graph)
+            .unwrap()
+            .nnz;
+        let actual = RpqMatrixEvaluator::optimized(optimizer)
+            .evaluate(&query, &graph)
+            .unwrap()
+            .nnz;
+        assert_eq!(actual, expected, "{optimizer:?}");
     }
 
     #[test]
@@ -168,11 +161,7 @@ mod tests {
         ];
 
         for optimizer in [
-            OptimizationStrategy::MetaAc,
-            OptimizationStrategy::Mnc,
-            OptimizationStrategy::Hybrid,
             OptimizationStrategy::PangHybrid,
-            OptimizationStrategy::Sampling,
         ] {
             let evaluator = RpqMatrixEvaluator::optimized(optimizer);
             for (query, expected) in &queries {
