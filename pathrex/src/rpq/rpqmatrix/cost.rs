@@ -17,15 +17,12 @@ impl PartialEq for Estimate {
         self.cmp(other).is_eq()
     }
 }
-
 impl Eq for Estimate {}
-
 impl PartialOrd for Estimate {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
-
 impl Ord for Estimate {
     fn cmp(&self, other: &Self) -> Ordering {
         self.score
@@ -36,10 +33,26 @@ impl Ord for Estimate {
     }
 }
 
+/// Statistics of C in R = (has_identity ? I : empty) union C.
+/// C may contain diagonal pairs; it is not assumed to be irreflexive.
+#[derive(Clone, Debug, Default)]
+struct CoreEstimate {
+    nnz: f64,
+    rows: f64,
+    cols: f64,
+    // Bounds conditional on the estimated core sizes, not confidence intervals
+    // or guaranteed bounds on the actual graph cardinality.
+    diagonal_lower: f64,
+    diagonal_upper: f64,
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct PangHybridEstimate {
+    // Full materialized relation; nnz uses the upper end of the diagonal range.
     estimate: Estimate,
-    identity: bool,
+    core: CoreEstimate,
+    has_identity: bool,
+    nnz_lower: f64,
 }
 impl PartialEq for PangHybridEstimate {
     fn eq(&self, other: &Self) -> bool {
@@ -54,7 +67,9 @@ impl PartialOrd for PangHybridEstimate {
 }
 impl Ord for PangHybridEstimate {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.estimate.cmp(&other.estimate)
+        self.estimate
+            .cmp(&other.estimate)
+            .then(self.nnz_lower.total_cmp(&other.nnz_lower))
     }
 }
 
@@ -66,112 +81,151 @@ impl PangHybridCostFn {
     pub fn new(n: f64) -> Self {
         Self { n }
     }
-    fn label(&self, meta: &LabelMeta) -> PangHybridEstimate {
-        PangHybridEstimate {
-            estimate: Estimate {
-                score: 0.0,
-                nnz: meta.nvals as f64,
-                rows: meta.nonzero_rows as f64,
-                cols: meta.nonzero_cols as f64,
-            },
-            identity: false,
-        }
-    }
-    fn vertex(&self) -> PangHybridEstimate {
-        PangHybridEstimate {
-            estimate: Estimate {
-                score: 0.0,
-                nnz: 1.0,
-                rows: 1.0,
-                cols: 1.0,
-            },
-            identity: false,
-        }
-    }
-    fn product(
+
+    fn relation(
         &self,
-        a: &PangHybridEstimate,
-        b: &PangHybridEstimate,
-        join_denominator: f64,
-    ) -> (PangHybridEstimate, f64) {
-        let work = a.estimate.nnz * b.estimate.nnz / a.estimate.rows.max(b.estimate.cols).max(1.0);
-        // Eq. 10 with an effective J. Seq passes Join's denominator;
-        // closure passes n to approximate the support intersection.
-        let join = a.estimate.cols * b.estimate.rows / join_denominator;
-        let (nnz, rows, cols) = if join > 0.0 {
-            let pairs =
-                join * (a.estimate.nnz / a.estimate.cols) * (b.estimate.nnz / b.estimate.rows);
-            let nnz = pairs
-                .min(a.estimate.rows * b.estimate.cols)
-                .min(self.n * self.n);
+        mut core: CoreEstimate,
+        has_identity: bool,
+        score: f64,
+    ) -> PangHybridEstimate {
+        core.rows = core.rows.clamp(0.0, self.n);
+        core.cols = core.cols.clamp(0.0, self.n);
+        core.nnz = core.nnz.clamp(0.0, core.rows * core.cols);
+        core.rows = core.rows.min(core.nnz);
+        core.cols = core.cols.min(core.nnz);
+        let diagonal_cap = core.nnz.min(core.rows).min(core.cols);
+        core.diagonal_lower = core.diagonal_lower.clamp(0.0, diagonal_cap);
+        core.diagonal_upper = core.diagonal_upper.clamp(core.diagonal_lower, diagonal_cap);
+        let (nnz_lower, nnz, rows, cols) = if has_identity {
             (
-                nnz,
-                (a.estimate.rows * join / a.estimate.cols)
-                    .min(a.estimate.rows)
-                    .min(nnz),
-                (b.estimate.cols * join / b.estimate.rows)
-                    .min(b.estimate.cols)
-                    .min(nnz),
+                (self.n + core.nnz - core.diagonal_upper).clamp(self.n, self.n * self.n),
+                (self.n + core.nnz - core.diagonal_lower).clamp(self.n, self.n * self.n),
+                self.n,
+                self.n,
             )
         } else {
-            (0.0, 0.0, 0.0)
+            (core.nnz, core.nnz, core.rows, core.cols)
         };
-        let mut out = PangHybridEstimate {
+        PangHybridEstimate {
             estimate: Estimate {
-                score: 0.0,
+                score,
                 nnz,
                 rows,
                 cols,
             },
-            identity: false,
-        };
-        if a.identity {
-            out = b.clone()
-        } else if b.identity {
-            out = a.clone()
+            core,
+            has_identity,
+            nnz_lower,
         }
-        out.estimate.score = 0.0;
-        (out, work)
     }
-    fn alternate(&self, a: &PangHybridEstimate, b: &PangHybridEstimate) -> PangHybridEstimate {
-        if a.estimate.nnz == 0.0 {
+
+    fn label(&self, meta: &LabelMeta) -> PangHybridEstimate {
+        self.relation(
+            CoreEstimate {
+                nnz: meta.nvals as f64,
+                rows: meta.nonzero_rows as f64,
+                cols: meta.nonzero_cols as f64,
+                diagonal_lower: 0.0,
+                diagonal_upper: meta.nvals.min(meta.nonzero_rows).min(meta.nonzero_cols) as f64,
+            },
+            false,
+            0.0,
+        )
+    }
+
+    fn vertex(&self) -> PangHybridEstimate {
+        self.relation(
+            CoreEstimate {
+                nnz: 1.0,
+                rows: 1.0,
+                cols: 1.0,
+                diagonal_lower: 1.0,
+                diagonal_upper: 1.0,
+            },
+            false,
+            0.0,
+        )
+    }
+
+    fn core_product(&self, a: &CoreEstimate, b: &CoreEstimate, denominator: f64) -> CoreEstimate {
+        if a.nnz == 0.0 || b.nnz == 0.0 {
+            return CoreEstimate::default();
+        }
+        // Retain the previous scalar compatibility heuristic for the core.
+        // Seq and closure still choose their original kinds of denominator.
+        let join = a.cols * b.rows / denominator.max(1.0);
+        let nnz = (join * (a.nnz / a.cols) * (b.nnz / b.rows))
+            .min(a.rows * b.cols)
+            .min(self.n * self.n);
+        let rows = (a.rows * join / a.cols).min(a.rows).min(nnz);
+        let cols = (b.cols * join / b.rows).min(b.cols).min(nnz);
+        CoreEstimate {
+            nnz,
+            rows,
+            cols,
+            diagonal_lower: 0.0,
+            diagonal_upper: nnz.min(rows).min(cols),
+        }
+    }
+
+    fn core_union(&self, a: &CoreEstimate, b: &CoreEstimate) -> CoreEstimate {
+        if a.nnz == 0.0 {
             return b.clone();
         }
-        if b.estimate.nnz == 0.0 {
+        if b.nnz == 0.0 {
             return a.clone();
         }
-        if a.identity && b.identity {
-            let mut out = a.clone();
-            out.estimate.score = 0.0;
-            return out;
-        }
-        let n = self.n;
-        let overlap = a.estimate.nnz * b.estimate.nnz / (n * n).max(1.0);
-        let estimate = Estimate {
-            score: 0.0,
-            nnz: (a.estimate.nnz + b.estimate.nnz - overlap).clamp(0.0, n * n),
-            rows: (a.estimate.rows + b.estimate.rows
-                - a.estimate.rows * b.estimate.rows / n.max(1.0))
-            .clamp(0.0, n),
-            cols: (a.estimate.cols + b.estimate.cols
-                - a.estimate.cols * b.estimate.cols / n.max(1.0))
-            .clamp(0.0, n),
-        };
-        PangHybridEstimate {
-            estimate,
-            identity: false,
+        let n = self.n.max(1.0);
+        CoreEstimate {
+            nnz: (a.nnz + b.nnz - a.nnz * b.nnz / (n * n))
+                .max(a.nnz.max(b.nnz))
+                .min(self.n * self.n),
+            rows: (a.rows + b.rows - a.rows * b.rows / n)
+                .max(a.rows.max(b.rows))
+                .min(self.n),
+            cols: (a.cols + b.cols - a.cols * b.cols / n)
+                .max(a.cols.max(b.cols))
+                .min(self.n),
+            diagonal_lower: a.diagonal_lower.max(b.diagonal_lower),
+            diagonal_upper: (a.diagonal_upper + b.diagonal_upper).min(self.n),
         }
     }
+
+    fn product(
+        &self,
+        a: &PangHybridEstimate,
+        b: &PangHybridEstimate,
+        denominator: f64,
+    ) -> (PangHybridEstimate, f64) {
+        // Keep the physical work proxy on the full materialized matrices.
+        let work = a.estimate.nnz * b.estimate.nnz / a.estimate.rows.max(b.estimate.cols).max(1.0);
+        let mut core = self.core_product(&a.core, &b.core, denominator);
+        if a.has_identity {
+            core = self.core_union(&core, &b.core);
+        }
+        if b.has_identity {
+            core = self.core_union(&core, &a.core);
+        }
+        (
+            self.relation(core, a.has_identity && b.has_identity, 0.0),
+            work,
+        )
+    }
+
+    fn alternate(&self, a: &PangHybridEstimate, b: &PangHybridEstimate) -> PangHybridEstimate {
+        self.relation(
+            self.core_union(&a.core, &b.core),
+            a.has_identity || b.has_identity,
+            0.0,
+        )
+    }
+
     fn closure_steps(&self, body: &PangHybridEstimate, initial: f64) -> usize {
-        if body.estimate.nnz == 0.0 || initial == 0.0 {
+        if body.core.nnz == 0.0 || initial == 0.0 {
             return 1;
         }
-        // Eq. 24 uses a separate support-intersection estimate. Using the
-        // Join-work proxy here would make growth >= 1 for every nonempty R.
-        let growth = body.estimate.nnz / self.n.max(1.0);
-        if growth == 0.0 {
-            return 1;
-        }
+        // Deliberately retain the old depth heuristic, applied only to C.
+        let growth = body.core.nnz / self.n.max(1.0);
         if growth >= 1.0 {
             6
         } else {
@@ -180,80 +234,77 @@ impl PangHybridCostFn {
                 .clamp(1.0, 64.0) as usize
         }
     }
+
     fn closure(
-        &mut self,
+        &self,
         body: PangHybridEstimate,
         seed: PangHybridEstimate,
         left: bool,
         single: bool,
         reflexive: bool,
     ) -> PangHybridEstimate {
-        if body.identity {
-            if single {
-                let mut out = body;
-                out.estimate.score += self.n;
-                return out;
-            }
-            let mut out = seed;
-            out.estimate.score += body.estimate.score + body.estimate.nnz + out.estimate.nnz;
+        let step = self.relation(body.core.clone(), false, 0.0);
+        if body.has_identity && body.core.nnz == 0.0 {
+            let mut out = if single { body.clone() } else { seed.clone() };
+            out.estimate.score = if single {
+                body.estimate.score + self.n
+            } else {
+                body.estimate.score + seed.estimate.score + body.estimate.nnz + seed.estimate.nnz
+            };
             return out;
         }
+        let mut result = if single { step.clone() } else { seed.clone() };
+        let mut power = result.clone();
         let initial = if single {
-            seed.estimate.nnz
+            step.core.nnz
         } else if left {
-            self.product(&body, &seed, self.n.max(1.0)).0.estimate.nnz
+            self.product(&step, &result, self.n.max(1.0)).0.core.nnz
         } else {
-            self.product(&seed, &body, self.n.max(1.0)).0.estimate.nnz
+            self.product(&result, &step, self.n.max(1.0)).0.core.nnz
         };
-        let steps = self.closure_steps(&body, initial);
-        let mut result = seed.clone();
-        let mut power = seed.clone();
+        let steps = self.closure_steps(&step, initial);
         let mut score = body.estimate.score + if single { 0.0 } else { seed.estimate.score };
-        if single || (body.estimate.nnz > 0.0 && seed.estimate.nnz > 0.0) {
-            let products = steps - usize::from(single);
-            for _ in 0..products {
+        if single || (step.core.nnz > 0.0 && seed.estimate.nnz > 0.0) {
+            for _ in 0..steps - usize::from(single) {
                 let (product, work) = if left {
                     self.product(&body, &result, self.n.max(1.0))
                 } else {
                     self.product(&result, &body, self.n.max(1.0))
                 };
-                let (next_power, _) = if left {
-                    self.product(&body, &power, self.n.max(1.0))
+                let next_power = if left {
+                    self.product(&step, &power, self.n.max(1.0)).0
                 } else {
-                    self.product(&power, &body, self.n.max(1.0))
+                    self.product(&power, &step, self.n.max(1.0)).0
                 };
-                let mut next = if next_power.estimate.nnz < 1.0 {
+                let mut next = if next_power.core.nnz < 1.0 {
                     result.clone()
                 } else {
                     self.alternate(&result, &next_power)
                 };
-                if single || !left {
-                    next.estimate.rows = seed.estimate.rows;
+                // A closure keeps the seed's bound side. A symbolic full I is
+                // unconstrained and must not restrict C to its empty core.
+                if single || (!left && !seed.has_identity) {
+                    next.core.rows = seed.core.rows;
                 }
-                if single || left {
-                    next.estimate.cols = seed.estimate.cols;
+                if single || (left && !seed.has_identity) {
+                    next.core.cols = seed.core.cols;
                 }
-                next.estimate.nnz = next
-                    .estimate
-                    .nnz
-                    .min(next.estimate.rows * next.estimate.cols);
+                next = self.relation(next.core, next.has_identity, 0.0);
                 score += work + result.estimate.nnz + product.estimate.nnz + next.estimate.nnz;
                 result = next;
                 power = next_power;
-                if power.estimate.nnz < 1.0
-                    || result.estimate.nnz >= result.estimate.rows * result.estimate.cols
-                {
+                if power.core.nnz < 1.0 || result.core.nnz >= result.core.rows * result.core.cols {
                     break;
                 }
             }
         }
-        if single && reflexive {
-            let plus = result.estimate.nnz;
-            result.estimate.nnz = (plus + self.n).min(self.n * self.n);
-            score += self.n + plus + result.estimate.nnz;
-            result.estimate.rows = self.n;
-            result.estimate.cols = self.n;
-            result.identity = body.estimate.nnz == 0.0
+        if single {
+            result = self.relation(result.core, reflexive || body.has_identity, 0.0);
+            if reflexive {
+                score += self.n + result.core.nnz + result.estimate.nnz;
+            } else {
+                score += body.estimate.nnz;
+            }
         }
         result.estimate.score = score;
         result
@@ -272,14 +323,17 @@ impl CostFunction<RpqPlan> for PangHybridCostFn {
             RpqPlan::NamedVertex(_) => self.vertex(),
             RpqPlan::Seq([a, b]) => {
                 let (a, b) = (costs(*a), costs(*b));
-                let denominator = a.estimate.rows.max(b.estimate.cols).max(1.0);
-                let (mut out, work) = self.product(&a, &b, denominator);
+                let (mut out, work) = self.product(&a, &b, a.core.rows.max(b.core.cols).max(1.0));
                 out.estimate.score = a.estimate.score + b.estimate.score + work;
                 out
             }
-            RpqPlan::Alt([a, b]) => {
-                let (a, b) = (costs(*a), costs(*b));
-                let mut out = self.alternate(&a, &b);
+            RpqPlan::Alt([left, right]) => {
+                let (a, b) = (costs(*left), costs(*right));
+                let mut out = if left == right {
+                    a.clone()
+                } else {
+                    self.alternate(&a, &b)
+                };
                 out.estimate.score = a.estimate.score + b.estimate.score + out.estimate.nnz;
                 out
             }
@@ -289,12 +343,7 @@ impl CostFunction<RpqPlan> for PangHybridCostFn {
             }
             RpqPlan::Plus([a]) => {
                 let a = costs(*a);
-                let mut out = self.closure(a.clone(), a.clone(), false, true, false);
-                // Native plus duplicates its input instead of creating I.
-                if !a.identity {
-                    out.estimate.score += a.estimate.nnz;
-                }
-                out
+                self.closure(a.clone(), a, false, true, false)
             }
             RpqPlan::LStar([a, b]) => self.closure(costs(*a), costs(*b), true, false, false),
             RpqPlan::RStar([a, b]) => self.closure(costs(*b), costs(*a), false, false, false),
@@ -306,91 +355,186 @@ impl CostFunction<RpqPlan> for PangHybridCostFn {
 mod tests {
     use super::*;
 
+    fn core(nnz: f64, rows: f64, cols: f64, diagonal: Option<f64>) -> CoreEstimate {
+        CoreEstimate {
+            nnz,
+            rows,
+            cols,
+            diagonal_lower: diagonal.unwrap_or(0.0),
+            diagonal_upper: diagonal.unwrap_or(nnz.min(rows).min(cols)),
+        }
+    }
+
+    fn assert_same_relation(a: &PangHybridEstimate, b: &PangHybridEstimate) {
+        assert_eq!(a.has_identity, b.has_identity);
+        assert_eq!(a.estimate.nnz, b.estimate.nnz);
+        assert_eq!(a.estimate.rows, b.estimate.rows);
+        assert_eq!(a.estimate.cols, b.estimate.cols);
+        assert_eq!(a.nnz_lower, b.nnz_lower);
+        assert_eq!(a.core.nnz, b.core.nnz);
+        assert_eq!(a.core.rows, b.core.rows);
+        assert_eq!(a.core.cols, b.core.cols);
+        assert_eq!(a.core.diagonal_lower, b.core.diagonal_lower);
+        assert_eq!(a.core.diagonal_upper, b.core.diagonal_upper);
+    }
+
     #[test]
-    fn plus_estimates_do_not_add_empty_paths() {
+    fn full_identity_does_not_enlarge_the_core() {
+        let model = PangHybridCostFn::new(100_000_000.0);
+        let star = model.relation(core(100.0, 20.0, 30.0, None), true, 0.0);
+        assert_eq!(star.estimate.rows, model.n);
+        assert_eq!(star.estimate.cols, model.n);
+        assert_eq!(star.core.rows, 20.0);
+        assert_eq!(star.core.cols, 30.0);
+        assert_eq!(star.nnz_lower, model.n + 80.0);
+        assert_eq!(star.estimate.nnz, model.n + 100.0);
+    }
+
+    #[test]
+    fn identity_products_preserve_every_small_core_including_diagonals() {
+        for n in 0_usize..=3 {
+            let model = PangHybridCostFn::new(n as f64);
+            let identity = model.relation(CoreEstimate::default(), true, 0.0);
+            for bits in 0_u32..(1_u32 << (n * n)) {
+                let has = |i: usize, j: usize| (bits & (1_u32 << (i * n + j))) != 0_u32;
+                let stats = core(
+                    bits.count_ones() as f64,
+                    (0..n).filter(|&i| (0..n).any(|j| has(i, j))).count() as f64,
+                    (0..n).filter(|&j| (0..n).any(|i| has(i, j))).count() as f64,
+                    Some((0..n).filter(|&i| has(i, i)).count() as f64),
+                );
+                for has_identity in [false, true] {
+                    let a = model.relation(stats.clone(), has_identity, 0.0);
+                    assert_same_relation(&a, &model.product(&identity, &a, 1.0).0);
+                    assert_same_relation(&a, &model.product(&a, &identity, model.n.max(1.0)).0);
+                    if has_identity {
+                        let want = model.n + stats.nnz - stats.diagonal_lower;
+                        assert_eq!(a.nnz_lower, want);
+                        assert_eq!(a.estimate.nnz, want);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn unions_count_the_full_identity_once() {
+        let model = PangHybridCostFn::new(100.0);
+        let identity = model.relation(CoreEstimate::default(), true, 0.0);
+        assert_same_relation(&identity, &model.alternate(&identity, &identity));
+        let vertex = model.vertex();
+        let union = model.alternate(&identity, &vertex);
+        assert_eq!(union.estimate.nnz, 100.0);
+        assert_eq!(union.nnz_lower, 100.0);
+        assert_eq!(union.core.nnz, 1.0);
+        assert!(union.has_identity);
+    }
+
+    #[test]
+    fn a_star_times_b_keeps_b_even_when_core_product_vanishes() {
+        let model = PangHybridCostFn::new(100_000_000.0);
+        let a = model.relation(core(2.0, 2.0, 2.0, None), true, 0.0);
+        let b = model.vertex();
+        let out = model.product(&a, &b, model.n).0;
+        assert!(!out.has_identity);
+        assert!(out.core.nnz >= b.core.nnz);
+        assert!(out.core.rows >= b.core.rows);
+        assert!(out.core.cols >= b.core.cols);
+        assert!(out.core.diagonal_lower >= b.core.diagonal_lower);
+    }
+
+    #[test]
+    fn star_product_keeps_both_cores_and_a_single_identity() {
+        let model = PangHybridCostFn::new(100.0);
+        let a = model.relation(core(2.0, 2.0, 2.0, None), true, 0.0);
+        let b = model.relation(core(3.0, 3.0, 3.0, None), true, 0.0);
+        let out = model.product(&a, &b, 3.0).0;
+        assert!(out.has_identity);
+        assert!(out.core.nnz >= 3.0);
+        assert!(out.core.rows >= 3.0);
+        assert!(out.core.cols >= 3.0);
+        assert!(out.estimate.nnz >= model.n);
+        assert!(out.estimate.nnz <= model.n + out.core.nnz);
+    }
+
+    #[test]
+    fn closure_growth_ignores_the_full_identity_component() {
+        let model = PangHybridCostFn::new(100_000_000.0);
+        let a = model.relation(core(2.0, 2.0, 2.0, None), false, 0.0);
+        let star = model.relation(a.core.clone(), true, 0.0);
+        assert_eq!(
+            model.closure_steps(&a, 2.0),
+            model.closure_steps(&star, 2.0)
+        );
+        assert_eq!(model.closure_steps(&star, 2.0), 1);
+        let dense = model.relation(core(model.n, 10_000.0, 10_000.0, None), false, 0.0);
+        assert_eq!(model.closure_steps(&dense, model.n), 6);
+    }
+
+    #[test]
+    fn unary_closures_preserve_cycle_diagonals_and_nullable_inputs() {
         let mut model = PangHybridCostFn::new(100.0);
-        for nnz in [0, 1] {
-            let body = model.label(&LabelMeta {
-                name: "p".into(),
-                nvals: nnz,
-                nonzero_rows: nnz,
-                nonzero_cols: nnz,
-            });
-            let plus = model.cost(&RpqPlan::Plus([Id::from(0)]), |_| body.clone());
-            let star = model.cost(&RpqPlan::Star([Id::from(0)]), |_| body.clone());
-            assert_eq!(plus.estimate.nnz, nnz as f64);
-            assert_eq!(plus.estimate.rows, nnz as f64);
-            assert_eq!(plus.estimate.cols, nnz as f64);
-            assert!(!plus.identity);
-            assert!(star.estimate.nnz >= 100.0);
-            assert_eq!(star.estimate.rows, 100.0);
-            assert_eq!(star.estimate.cols, 100.0);
+        let cycle = model.relation(core(4.0, 2.0, 2.0, Some(2.0)), false, 0.0);
+        let plus = model.cost(&RpqPlan::Plus([Id::from(0)]), |_| cycle.clone());
+        let star = model.cost(&RpqPlan::Star([Id::from(0)]), |_| cycle.clone());
+        assert!(!plus.has_identity);
+        assert_eq!(plus.estimate.nnz, 4.0);
+        assert_eq!(star.estimate.nnz, 102.0);
+        assert_eq!(star.nnz_lower, 102.0);
+        assert_eq!(star.core.diagonal_lower, 2.0);
+        let nested_plus = model.cost(&RpqPlan::Plus([Id::from(0)]), |_| star.clone());
+        assert_same_relation(&star, &nested_plus);
+    }
+
+    #[test]
+    fn empty_closures_work_for_zero_and_nonzero_dimensions() {
+        for n in [0.0, 1.0, 100.0] {
+            let model = PangHybridCostFn::new(n);
+            let empty = model.relation(CoreEstimate::default(), false, 0.0);
+            let plus = model.closure(empty.clone(), empty.clone(), false, true, false);
+            let star = model.closure(empty.clone(), empty, false, true, true);
+            assert!(!plus.has_identity);
+            assert_eq!(plus.estimate.nnz, 0.0);
+            assert!(star.has_identity);
+            assert_eq!(star.estimate.nnz, n);
+            assert_eq!(star.core.nnz, 0.0);
+            let nested_star = model.closure(star.clone(), star.clone(), false, true, true);
+            let nested_plus = model.closure(star.clone(), star.clone(), false, true, false);
+            assert_same_relation(&star, &nested_star);
+            assert_same_relation(&star, &nested_plus);
         }
     }
 
     #[test]
-    fn pang_hybrid_star_steps_follow_growth() {
+    fn seeded_closures_keep_the_seed_and_its_bound_side() {
         let model = PangHybridCostFn::new(4.0);
-        let sparse = PangHybridEstimate {
-            estimate: Estimate {
-                score: 0.0,
-                nnz: 2.0,
-                rows: 2.0,
-                cols: 2.0,
-            },
-            identity: false,
-        };
-        let dense = PangHybridEstimate {
-            estimate: Estimate {
-                score: 0.0,
-                nnz: 4.0,
-                rows: 2.0,
-                cols: 2.0,
-            },
-            identity: false,
-        };
-        assert_eq!(model.closure_steps(&sparse, sparse.estimate.nnz), 1);
-        assert_eq!(model.closure_steps(&dense, dense.estimate.nnz), 6);
+        let body = model.relation(core(4.0, 2.0, 2.0, None), false, 0.0);
+        let seed = model.vertex();
+        for left in [false, true] {
+            let out = model.closure(body.clone(), seed.clone(), left, false, false);
+            assert!(out.core.nnz >= seed.core.nnz);
+            assert!(out.core.diagonal_lower >= seed.core.diagonal_lower);
+            assert!(!out.has_identity);
+            if left {
+                assert_eq!(out.core.cols, seed.core.cols);
+            } else {
+                assert_eq!(out.core.rows, seed.core.rows);
+            }
+            let identity = model.relation(CoreEstimate::default(), true, 0.0);
+            let with_identity_seed = model.closure(body.clone(), identity, left, false, false);
+            assert!(with_identity_seed.has_identity);
+            assert!(with_identity_seed.core.nnz > 0.0);
+        }
     }
 
     #[test]
-    fn pang_hybrid_identity_remains_consistent_through_union_and_star() {
-        let mut model = PangHybridCostFn::new(4.0);
-        let empty = PangHybridEstimate {
-            estimate: Estimate {
-                score: 0.0,
-                nnz: 0.0,
-                rows: 0.0,
-                cols: 0.0,
-            },
-            identity: false,
-        };
-        let identity = model.closure(empty.clone(), empty, false, true, true);
-        let union = model.alternate(&identity, &identity);
-        let nested_star = model.closure(identity.clone(), identity, false, true, true);
-        for result in [union, nested_star.clone()] {
-            assert!(result.identity);
-            assert_eq!(result.estimate.nnz, 4.0);
-            assert_eq!(result.estimate.rows, 4.0);
-            assert_eq!(result.estimate.cols, 4.0);
-        }
-
-        let operand = PangHybridEstimate {
-            estimate: Estimate {
-                score: 1.0,
-                nnz: 2.0,
-                rows: 1.0,
-                cols: 2.0,
-            },
-            identity: false,
-        };
-        let left = model.closure(nested_star.clone(), operand.clone(), true, false, false);
-        let right = model.closure(nested_star, operand.clone(), false, false, false);
-        for result in [left, right] {
-            assert!(!result.identity);
-            assert_eq!(result.estimate.nnz, operand.estimate.nnz);
-            assert_eq!(result.estimate.rows, operand.estimate.rows);
-            assert_eq!(result.estimate.cols, operand.estimate.cols);
-        }
+    fn physical_work_still_sees_full_materialized_matrices() {
+        let model = PangHybridCostFn::new(100.0);
+        let a = model.relation(CoreEstimate::default(), true, 0.0);
+        let b = model.vertex();
+        let (_, work) = model.product(&a, &b, 1.0);
+        assert_eq!(work, 1.0);
+        let (_, work) = model.product(&a, &a, 1.0);
+        assert_eq!(work, 100.0);
     }
 }
