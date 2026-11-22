@@ -82,6 +82,7 @@ fn run() -> Result<(), MainError> {
     match cli.command {
         Commands::Query(args) => run_query_cmd(args),
         Commands::Bench(args) => run_bench_cmd(args),
+        Commands::Explain(args) => run_explain_cmd(args),
     }
 }
 
@@ -159,6 +160,57 @@ fn load_query_file(path: &str, base_iri: Option<&str>) -> Result<Vec<LoadedQuery
         path: path.to_string(),
         source: e,
     })
+}
+
+fn run_explain_cmd(args: QueryArgs) -> Result<(), MainError> {
+    let common = &args.common;
+    validate_common_args(common)?;
+    if common.algo != [Algo::Rpqmatrix] {
+        return Err(MainError::InvalidArgs(
+            "explain requires --algo rpqmatrix only".into(),
+        ));
+    }
+    let graph = load_graph(&common.graph, common.format, common.base_iri.as_deref())?;
+    let queries = load_query_file(&common.queries, common.base_iri.as_deref())?;
+    let evaluator =
+        pathrex::rpq::rpqmatrix::RpqMatrixEvaluator::optimized(common.rpqmatrix_optimizer.into());
+    let mut errors = 0;
+    let results: Vec<_> = queries.iter().enumerate().map(|(index, loaded)| {
+        let plan = match &loaded.parsed {
+            Ok(query) => evaluator.explain(query, &graph).map_err(|error| error.to_string()),
+            Err(error) => Err(error.to_string()),
+        };
+        match plan {
+            Ok(plan) => serde_json::json!({"query_index":index,"query_id":loaded.id,"query_text":loaded.text,"status":"ok","plan":plan}),
+            Err(error) => {
+                errors += 1;
+                serde_json::json!({"query_index":index,"query_id":loaded.id,"query_text":loaded.text,"status":"error","error":error})
+            }
+        }
+    }).collect();
+    let output = serde_json::json!({
+        "metadata": {"graph_path":common.graph,"optimizer":common.rpqmatrix_optimizer.to_string(),"num_nodes":graph.num_nodes(),"num_labels":graph.num_labels(),"executed":false},
+        "results":results,
+    });
+    let path = args.output.as_deref().unwrap_or("stdout");
+    let text = serde_json::to_string_pretty(&output).map_err(|error| MainError::Output {
+        path: path.into(),
+        source: std::io::Error::other(error),
+    })?;
+    if let Some(path) = &args.output {
+        std::fs::write(path, text).map_err(|source| MainError::Output {
+            path: path.clone(),
+            source,
+        })?;
+    } else {
+        println!("{text}");
+    }
+    if errors > 0 {
+        return Err(MainError::InvalidArgs(format!(
+            "{errors} query plan(s) failed; see explain output"
+        )));
+    }
+    Ok(())
 }
 
 fn run_query_cmd(args: QueryArgs) -> Result<(), MainError> {

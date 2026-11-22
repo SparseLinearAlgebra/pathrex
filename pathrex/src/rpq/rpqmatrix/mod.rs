@@ -7,6 +7,6 @@ mod optimize;
 mod plan;
 pub mod result;
 
-pub use eval::RpqMatrixEvaluator;
+pub use eval::{RpqMatrixEvaluator, RpqMatrixPlanExplanation, RpqMatrixPlanNode};
 pub use optimize::OptimizationStrategy;
 pub use result::RpqMatrixResult;

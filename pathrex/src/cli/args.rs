@@ -31,6 +31,8 @@ pub enum Commands {
     Query(QueryArgs),
     /// Benchmark RPQ evaluators
     Bench(BenchArgs),
+    /// Select and print RPQMatrix plans without executing queries
+    Explain(QueryArgs),
 }
 
 /// Arguments shared by both subcommands.
@@ -95,6 +97,10 @@ pub struct BenchArgs {
     /// Output JSON file for benchmark results.
     #[arg(short = 'o', long, default_value = "bench_results.json")]
     pub output: String,
+
+    /// Append each completed query's timings and raw samples to JSONL.
+    #[arg(long)]
+    pub results_jsonl: Option<String>,
 
     /// Optional checkpoint file path.
     #[arg(short = 'c', long)]

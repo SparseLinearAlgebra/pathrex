@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -13,6 +14,45 @@ use crate::cli::output::{AlgoResult, AlgoTiming, AlgoTimingSamples, QueryResult,
 use crate::eval::{Evaluator, PreparedEvaluator, ResultCount};
 use crate::graph::InMemoryGraph;
 use crate::rpq::{RpqError, RpqQuery};
+
+/// Persist outside every native timing interval, before marking a query done.
+fn append_query_result(
+    args: &BenchArgs,
+    query_index: usize,
+    loaded: &LoadedQuery,
+    algorithm: &str,
+    count: Option<usize>,
+    timing: &AlgoTiming,
+) -> Result<(), BenchError> {
+    let Some(path) = &args.results_jsonl else {
+        return Ok(());
+    };
+    let write = || -> std::io::Result<()> {
+        let row = serde_json::json!({
+            "query_index": query_index,
+            "query_id": loaded.id,
+            "query_text": loaded.text,
+            "algorithm": algorithm,
+            "optimizer": args.common.rpqmatrix_optimizer.to_string(),
+            "bench_mode": args.bench_mode.to_string(),
+            "result_count": count,
+            "timing": timing,
+            "samples": timing.samples,
+        });
+        let mut bytes = serde_json::to_vec(&row).map_err(std::io::Error::other)?;
+        bytes.push(b'\n');
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
+        file.write_all(&bytes)?;
+        file.sync_data()
+    };
+    write().map_err(|source| BenchError::ResultsIo {
+        path: path.clone(),
+        source,
+    })
+}
 
 /// Per-group criterion output destination.
 pub(crate) enum GroupOutput {
@@ -254,6 +294,7 @@ where
 
         match bench_result {
             Ok(Ok((count, timing))) => {
+                append_query_result(args, idx, loaded, algo_name, count, &timing)?;
                 algorithms.insert(algo_name.to_string(), AlgoResult::ok(count, Some(timing)));
             }
             Ok(Err(e)) => return Err(e),
@@ -276,4 +317,81 @@ where
     }
 
     Ok(results)
+}
+
+#[cfg(test)]
+mod incremental_output_tests {
+    use super::*;
+    use crate::cli::args::{Cli, Commands};
+    use crate::rpq::{Endpoint, PathExpr};
+    use clap::Parser;
+
+    #[test]
+    fn incremental_results_keep_raw_samples_and_append_without_overwriting() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("results.jsonl");
+        let cli = Cli::try_parse_from([
+            "pathrex",
+            "bench",
+            "-g",
+            "graph",
+            "-q",
+            "queries",
+            "-a",
+            "rpqmatrix",
+            "--results-jsonl",
+            path.to_str().unwrap(),
+        ])
+        .unwrap();
+        let Commands::Bench(mut args) = cli.command else {
+            panic!("expected bench");
+        };
+        let loaded = LoadedQuery {
+            id: "q1".into(),
+            text: "?x <p> ?y".into(),
+            parsed: Ok(RpqQuery {
+                subject: Endpoint::Variable("x".into()),
+                path: PathExpr::Label("p".into()),
+                object: Endpoint::Variable("y".into()),
+            }),
+        };
+        let samples = vec![10.0, 20.0];
+        let timing = AlgoTiming {
+            total: timing_stats(&samples),
+            ffi_only: timing_stats(&samples),
+            samples: Some(AlgoTimingSamples {
+                total_ns: samples.clone(),
+                ffi_only_ns: samples,
+            }),
+        };
+        append_query_result(&args, 0, &loaded, "rpqmatrix", Some(3), &timing).unwrap();
+        append_query_result(&args, 1, &loaded, "rpqmatrix", Some(3), &timing).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        let rows: Vec<serde_json::Value> = content
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["query_index"], 0);
+        assert_eq!(rows[1]["query_index"], 1);
+        assert_eq!(
+            rows[0]["samples"]["total_ns"],
+            serde_json::json!([10.0, 20.0])
+        );
+        assert_eq!(
+            rows[0]["samples"]["ffi_only_ns"],
+            serde_json::json!([10.0, 20.0])
+        );
+        args.results_jsonl = Some(
+            directory
+                .path()
+                .join("missing/output.jsonl")
+                .display()
+                .to_string(),
+        );
+        assert!(matches!(
+            append_query_result(&args, 2, &loaded, "rpqmatrix", Some(3), &timing),
+            Err(BenchError::ResultsIo { .. })
+        ));
+    }
 }

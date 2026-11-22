@@ -207,6 +207,33 @@ q1,?x <knows>/<likes>* ?y
 q2,?x (<a>|<b>)+ ?y
 ```
 
+## Inspecting the selected RPQMatrix plan
+
+```bash
+pathrex explain --graph graph-directory --queries queries.txt --base-iri \
+  --algo rpqmatrix --rpqmatrix-optimizer pang-hybrid --output plans.json
+```
+
+`explain` loads the graph and selects plans through the same translation and
+optimization path as preparation, without materializing or executing them.
+Output includes the requested CSR/CSC storage, expression, root node and a
+shared DAG with label cardinalities and endpoint selectors. It describes a
+separate planning pass; it does not instrument a prior timed execution.
+`left_closure(A, B)` means `A* × B`; `right_closure(A, B)` means `A × B*`.
+Named endpoints appear as single-entry diagonal selectors.
+
+## Incremental benchmark results
+
+`bench --results-jsonl samples.jsonl` appends one JSON record after each
+successfully completed query/algorithm group. Records include summary timings
+and raw `total_ns` / `ffi_only_ns` samples in fixed-runs mode. Writes and fsync
+occur outside measured intervals. The usual final JSON and `.runs.json` files
+are still produced.
+
+Completed records survive interruption of a later query. Samples from the
+currently executing query are written only when that group completes. This
+file is an append-only result log, separate from the completion checkpoint.
+
 ## License
 
 Licensed under the MIT License. See [`LICENSE`](LICENSE).
